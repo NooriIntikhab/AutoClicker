@@ -509,11 +509,17 @@ class AutoClickerApp:
         )
 
     def _load_icon(self) -> None:
-        path = resource_path("icon.png")
-        if not path.exists():
+        ico = resource_path("icon.ico")
+        png = resource_path("icon.png")
+        if sys.platform == "win32" and ico.exists():
+            try:
+                self.root.iconbitmap(default=str(ico))
+            except tk.TclError:
+                pass
+        if not png.exists():
             return
         try:
-            self._icon_image = tk.PhotoImage(file=str(path))
+            self._icon_image = tk.PhotoImage(file=str(png))
             self.root.iconphoto(True, self._icon_image)
         except tk.TclError:
             self._icon_image = None

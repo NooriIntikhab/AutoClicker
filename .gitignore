@@ -6,3 +6,5 @@ dist/
 build/
 *.egg-info/
 *.spec
+windows/launcher.o
+windows/icon.ico

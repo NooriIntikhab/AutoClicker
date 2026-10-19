@@ -1,0 +1,4 @@
+AutoClicker.exe binary
+*.ico binary
+*.png binary
+run.bat text eol=crlf

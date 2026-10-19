@@ -2,11 +2,15 @@
 
 A small desktop app that clicks spots on your screen, in order, until you pause it or close it. You can keep five setups, change the play/pause key, and drag a speed bar. Setups are saved on this PC and loaded the next time you open the app. Minimizing the window does not stop the clicks.
 
-## Run it on Windows
+## Open it
 
-Install Python 3.11 or newer from [python.org](https://www.python.org/downloads/) and check **Add python.exe to PATH**. Then double-click `run.bat`.
+Download this folder and open it. Double-click the **AutoClicker** icon (`AutoClicker.exe`). The icon is the purple pointer.
 
-The first launch creates a `.venv` folder and installs the mouse library. After that, the window opens.
+The first time, that icon sets up Python in a `.venv` folder beside it, then the window opens. The next time, the icon opens the window directly.
+
+Install Python 3.11 or newer from [python.org](https://www.python.org/downloads/) and check **Add python.exe to PATH** before the first open. Windows may ask you to confirm the program the first time. Choose **More info**, then **Run anyway**.
+
+`run.bat` starts the same app if you prefer that.
 
 You can also do it yourself:
 
@@ -32,8 +36,10 @@ A GitHub Actions build also uploads `AutoClicker-Windows` from this repo's Actio
 
 ## macOS and Linux
 
+Double-click `AutoClicker.desktop`, or run:
+
 ```bash
-chmod +x run.sh
+chmod +x run.sh AutoClicker.desktop
 ./run.sh
 ```
 
