@@ -7,7 +7,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 
-from autoclicker.engine import ClickEngine
+from autoclicker.engine import ClickEngine, apply_emergency_stop
 from autoclicker.model import (
     SLOT_COUNT,
     ClickPoint,
@@ -208,23 +208,29 @@ class SpeedBar(tk.Canvas):
 
 
 class AutoClickerApp:
-    def __init__(self, root: tk.Tk, settings: Settings, mouse, hotkeys, capture, save_settings):
+    def __init__(
+        self,
+        root: tk.Tk,
+        settings: Settings,
+        mouse,
+        hotkeys,
+        capture,
+        save_settings,
+        emergency=None,
+    ):
         self.root = root
         self.settings = settings
         self.mouse = mouse
         self.hotkeys = hotkeys
         self.capture = capture
+        self.emergency = emergency
         self._save = save_settings
         self.engine = ClickEngine(
             mouse,
             self._points_for_engine,
             self._interval_for_engine,
             self._on_engine_event,
-            should_yield=self._user_wants_the_pointer,
         )
-        self._window_bounds: tuple[int, int, int, int] | None = None
-        self._last_seen: tuple[int, int] | None = None
-        self._moved_at = 0.0
         self.font = choose_font(root)
         self._busy = False
         self._rebinding = False
@@ -235,6 +241,7 @@ class AutoClickerApp:
         self._saw_iconic = False
         self._home_geometry = ""
         self._last_toggle = 0.0
+        self._block_start_until = 0.0
         self._save_after: str | None = None
         self._pending_status: str | None = None
         self._user_cancelled = False
@@ -260,10 +267,10 @@ class AutoClickerApp:
         self._icon_image = None
         self._build()
         self.apply_hotkey()
+        self._arm_emergency_stop()
         self.refresh()
         self._place_initial()
         self.root.after(200, self._watch_window_state)
-        self.root.after(80, self._cache_window_bounds)
         if sys.platform == "win32":
             self.root.after(30, self._ensure_taskbar)
 
@@ -347,6 +354,16 @@ class AutoClickerApp:
         )
         self.hotkey_button.pack(side="right")
 
+        self.emergency_label = tk.Label(
+            self._body,
+            text="Ctrl + S + T stops clicking",
+            bg=BG,
+            fg=MUTED,
+            font=(self.font, 9),
+            anchor="w",
+        )
+        self.emergency_label.pack(fill="x", pady=(6, 0))
+
         self.hint_label = tk.Label(
             self._body,
             text="This key keeps working while the window is minimized.",
@@ -355,7 +372,7 @@ class AutoClickerApp:
             font=(self.font, 9),
             anchor="w",
         )
-        self.hint_label.pack(fill="x", pady=(6, 14))
+        self.hint_label.pack(fill="x", pady=(2, 14))
 
         self._section(self._body, "Sets").pack(fill="x", pady=(0, 6))
         self.slot_row = tk.Frame(self._body, bg=BG)
@@ -657,37 +674,6 @@ class AutoClickerApp:
         if not self._closing:
             self.status_label.configure(text=text)
 
-    def _cache_window_bounds(self) -> None:
-        if self._closing:
-            return
-        self._window_bounds = _widget_bounds(self.root)
-        try:
-            self.root.after(80, self._cache_window_bounds)
-        except tk.TclError:
-            pass
-
-    def _user_wants_the_pointer(self) -> bool:
-        """True while the user is aiming at this window or moving the mouse."""
-
-        try:
-            pos = self.mouse.position()
-        except Exception:
-            return False
-        now = time.monotonic()
-        bounds = self._window_bounds
-        over_window = bounds is not None and contains_point(pos[0], pos[1], bounds, pad=20)
-        if over_window:
-            return True
-        last = getattr(self.mouse, "last_click", None)
-        moved = last is not None and (abs(pos[0] - last[0]) > 18 or abs(pos[1] - last[1]) > 18)
-        if not moved:
-            self._last_seen = pos
-            return False
-        if pos != self._last_seen:
-            self._last_seen = pos
-            self._moved_at = now
-        return now - self._moved_at < 0.3
-
     def _points_for_engine(self):
         return self.settings.active_points()
 
@@ -736,6 +722,8 @@ class AutoClickerApp:
         if self.engine.is_running:
             self.engine.stop()
             self._sync_play_button()
+            return
+        if now < self._block_start_until:
             return
         if not self.settings.active_points():
             self._set_status("Set up clicks for this set first.")
@@ -833,6 +821,33 @@ class AutoClickerApp:
             self.root.after(0, self.toggle_play)
         except tk.TclError:
             pass
+
+    def _arm_emergency_stop(self) -> None:
+        if self.emergency is None or self._closing:
+            return
+        try:
+            self.emergency.start(self._emergency_pressed)
+        except Exception as exc:
+            print(f"AutoClicker could not listen for Ctrl+S+T: {exc}", file=sys.stderr)
+
+    def _emergency_pressed(self) -> None:
+        if self._closing:
+            return
+        # Hold off Play for a moment so a play key of S or T cannot start
+        # clicking from the same chord.
+        self._block_start_until = time.monotonic() + 0.35
+        try:
+            self.root.after(0, self.emergency_stop)
+        except tk.TclError:
+            apply_emergency_stop(self.engine)
+
+    def emergency_stop(self) -> None:
+        """Ctrl+S+T always pauses. It does not start clicking."""
+
+        if self._closing:
+            return
+        apply_emergency_stop(self.engine)
+        self._sync_play_button()
 
     def run_setup(self) -> None:
         if self._busy or self._closing:
@@ -1452,6 +1467,11 @@ class AutoClickerApp:
             pass
         try:
             self.hotkeys.clear_hotkey()
+        except Exception:
+            pass
+        try:
+            if self.emergency is not None:
+                self.emergency.stop()
         except Exception:
             pass
         try:

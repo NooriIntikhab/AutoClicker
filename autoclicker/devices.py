@@ -1,4 +1,4 @@
-"""Mouse clicks, global play/pause, and capturing the next screen click."""
+"""Mouse clicks, global play/pause, emergency stop, and click capture."""
 
 from __future__ import annotations
 
@@ -97,6 +97,32 @@ class PynputHotkeys:
         self._capture = None
         if capture is not None:
             capture.stop()
+
+
+# Fixed safety chord. Not stored in the rebindable play/pause hotkey.
+EMERGENCY_STOP_SPEC = "<ctrl>+s+t"
+
+
+class PynputEmergencyStop:
+    """Global Ctrl+S+T listener. Always separate from the play/pause key."""
+
+    spec = EMERGENCY_STOP_SPEC
+
+    def __init__(self) -> None:
+        self._listener = None
+
+    def start(self, callback) -> None:
+        self.stop()
+        from pynput.keyboard import GlobalHotKeys
+
+        self._listener = GlobalHotKeys({self.spec: callback})
+        self._listener.start()
+
+    def stop(self) -> None:
+        listener = self._listener
+        self._listener = None
+        if listener is not None:
+            listener.stop()
 
 
 class PynputClickCapture:

@@ -15,6 +15,9 @@ class FakeMouse:
         self.clicks.append((x, y))
 
     def position(self):
+        place = getattr(self, "place", None)
+        if place is not None:
+            return place
         return self.last_click or (0, 0)
 
 
@@ -51,6 +54,23 @@ class FakeHotkeys:
         self.capturing = False
         if callback is not None:
             callback(spec)
+
+
+class FakeEmergency:
+    def __init__(self):
+        self.spec = "<ctrl>+s+t"
+        self.callback = None
+        self.started = False
+        self.stopped = False
+
+    def start(self, callback):
+        self.started = True
+        self.stopped = False
+        self.callback = callback
+
+    def stop(self):
+        self.stopped = True
+        self.callback = None
 
 
 class FakeCapture:
@@ -91,11 +111,12 @@ def app(tmp_path):
     mouse = FakeMouse()
     hotkeys = FakeHotkeys()
     capture = FakeCapture()
+    emergency = FakeEmergency()
 
     def save(settings):
         save_settings(settings, path)
 
-    window = AutoClickerApp(root, Settings(), mouse, hotkeys, capture, save)
+    window = AutoClickerApp(root, Settings(), mouse, hotkeys, capture, save, emergency)
     window.mouse_log = mouse
     window.path = path
     window.load = lambda: load_settings(path)
@@ -308,6 +329,94 @@ def test_speed_bar_saves_a_faster_gap(app):
     assert "20 clicks/sec" in app.speed_value.cget("text")
     app.persist()
     assert app.load().interval == pytest.approx(0.05)
+
+
+def test_pointer_movement_does_not_stop_clicking(app):
+    import time
+
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(4, 5)]
+    app.settings.interval = 0.05
+    app.refresh()
+    app.mouse_log.place = (1800, 900)
+    app._last_toggle = 0
+    app.toggle_play()
+    deadline = time.time() + 2
+    while len(app.mouse_log.clicks) < 2 and time.time() < deadline:
+        app.root.update()
+        time.sleep(0.02)
+    assert app.mouse_log.clicks[:2] == [(4, 5), (4, 5)]
+    assert app.engine.is_running
+    app.engine.stop()
+
+
+def test_window_shows_emergency_stop_and_keeps_the_play_key(app):
+    assert app.emergency_label.cget("text") == "Ctrl + S + T stops clicking"
+    assert app.emergency.spec == "<ctrl>+s+t"
+    assert app.emergency.started
+    assert app.settings.hotkey == "<f6>"
+    assert app.hotkeys.spec == "<f6>"
+    app.hotkey_button.invoke()
+    app.hotkeys.emit_key("s")
+    app.root.update()
+    assert app.settings.hotkey == "s"
+    assert app.hotkeys.spec == "s"
+    assert app.emergency.spec == "<ctrl>+s+t"
+    assert app.emergency.callback == app._emergency_pressed
+
+
+def test_ctrl_s_t_pauses_and_does_not_start(app):
+    import time
+
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(4, 5)]
+    app.settings.interval = 0.05
+    app.refresh()
+    assert not app.engine.is_running
+    app.emergency.callback()
+    app.root.update()
+    assert not app.engine.is_running
+    assert app.mouse_log.clicks == []
+
+    app._block_start_until = 0
+    app._last_toggle = 0
+    app.toggle_play()
+    deadline = time.time() + 2
+    while not app.mouse_log.clicks and time.time() < deadline:
+        time.sleep(0.02)
+    assert app.engine.is_running
+    app.emergency.callback()
+    app.root.update()
+    assert not app.engine.is_running
+    thread = app.engine._thread
+    if thread is not None:
+        thread.join(timeout=1)
+    frozen = list(app.mouse_log.clicks)
+    app.emergency.callback()
+    app.root.update()
+    time.sleep(0.15)
+    app.root.update()
+    assert not app.engine.is_running
+    assert app.mouse_log.clicks == frozen
+    assert app.play_button.text() == "Play"
+
+
+def test_chord_does_not_start_when_the_play_key_is_s(app):
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(1, 1)]
+    app.refresh()
+    app.hotkey_button.invoke()
+    app.hotkeys.emit_key("s")
+    app.root.update()
+    app._last_toggle = 0
+    app.hotkeys.callback()
+    app.emergency.callback()
+    app.root.update()
+    assert not app.engine.is_running
+    assert app.mouse_log.clicks == []
 
 
 def test_clicks_on_the_window_are_not_saved_as_spots(app):
