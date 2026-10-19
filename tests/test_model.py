@@ -43,6 +43,7 @@ def test_hotkey_labels_and_validation():
     assert not is_valid_hotkey("<ctrl>")
     assert not is_valid_hotkey("<shift_l>")
     assert not is_valid_hotkey("ctrl+a")
+    assert not is_valid_hotkey("<ctrl>+s+t")
     assert not is_valid_hotkey("")
 
 

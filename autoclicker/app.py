@@ -6,7 +6,12 @@ import sys
 import tkinter as tk
 from tkinter import messagebox
 
-from autoclicker.devices import PynputClickCapture, PynputHotkeys, PynputMouse
+from autoclicker.devices import (
+    PynputClickCapture,
+    PynputEmergencyStop,
+    PynputHotkeys,
+    PynputMouse,
+)
 from autoclicker.storage import load_settings, save_settings
 from autoclicker.ui import AutoClickerApp
 
@@ -40,6 +45,7 @@ def main() -> None:
         mouse = PynputMouse()
         hotkeys = PynputHotkeys()
         capture = PynputClickCapture()
+        emergency = PynputEmergencyStop()
     except Exception as exc:
         root.withdraw()
         messagebox.showerror(
@@ -51,5 +57,7 @@ def main() -> None:
         )
         root.destroy()
         sys.exit(1)
-    app = AutoClickerApp(root, load_settings(), mouse, hotkeys, capture, save_settings)
+    app = AutoClickerApp(
+        root, load_settings(), mouse, hotkeys, capture, save_settings, emergency
+    )
     app.run()

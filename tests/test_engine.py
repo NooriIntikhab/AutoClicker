@@ -1,6 +1,7 @@
 import threading
+import time
 
-from autoclicker.engine import ClickEngine, default_sleep
+from autoclicker.engine import ClickEngine, apply_emergency_stop, default_sleep
 from autoclicker.model import ClickPoint
 
 
@@ -108,30 +109,130 @@ def test_click_failure_stops_the_loop():
     assert events[-1][0] == "stopped"
 
 
-def test_yield_lets_the_user_hold_the_pointer():
-    mouse = FakeMouse()
-    calls = {"n": 0}
+def test_pointer_movement_does_not_stop_an_active_run():
+    """A far, still pointer used to yield the loop. It must keep clicking."""
 
-    def should_yield():
-        calls["n"] += 1
-        return calls["n"] < 4
+    mouse = FakeMouse()
+    state = {"pos": (0, 0), "last": None}
+
+    def user_moved_or_stopped():
+        last = state["last"]
+        if last is None:
+            return False
+        pos = state["pos"]
+        return abs(pos[0] - last[0]) > 18 or abs(pos[1] - last[1]) > 18
+
+    def click(x, y):
+        mouse.clicks.append((x, y))
+        state["last"] = (x, y)
+        state["pos"] = (500, 400)
+
+    mouse.click = click
 
     def sleep(stop, _get_interval):
-        stop.set()
-        return True
+        if len(mouse.clicks) >= 3:
+            stop.set()
+            return True
+        return stop.is_set()
+
+    def should_yield():
+        return False
 
     engine = ClickEngine(
         mouse,
-        lambda: [ClickPoint(3, 4)],
+        lambda: [ClickPoint(8, 9)],
+        lambda: 0.05,
+        lambda *_args, **_kwargs: None,
+        sleep,
+    )
+    assert should_yield() is False
+    engine.start()
+    engine._thread.join(timeout=2)
+    assert user_moved_or_stopped() is True
+    assert mouse.clicks == [(8, 9), (8, 9), (8, 9)]
+    assert not engine.is_running
+
+
+def test_stop_still_stops_when_nothing_yields():
+    mouse = FakeMouse()
+    started = threading.Event()
+
+    def sleep(stop, _get_interval):
+        started.set()
+        return stop.wait(2)
+
+    def should_yield():
+        return False
+
+    engine = ClickEngine(
+        mouse,
+        lambda: [ClickPoint(2, 2)],
+        lambda: 0.05,
+        lambda *_args, **_kwargs: None,
+        sleep,
+    )
+    assert should_yield() is False
+    engine.start()
+    assert started.wait(1)
+    assert engine.is_running
+    engine.stop()
+    assert not engine.is_running
+    assert mouse.clicks == [(2, 2)]
+
+
+def test_ctrl_s_t_pauses_a_run_and_does_not_start_one():
+    from pynput.keyboard import HotKey, Key, KeyCode
+
+    from autoclicker.devices import EMERGENCY_STOP_SPEC
+
+    mouse = FakeMouse()
+    started = threading.Event()
+
+    def sleep(stop, _get_interval):
+        started.set()
+        return stop.wait(2)
+
+    engine = ClickEngine(
+        mouse,
+        lambda: [ClickPoint(5, 6)],
         lambda: 0.25,
         lambda *_args, **_kwargs: None,
         sleep,
-        should_yield,
     )
-    engine.start()
-    engine._thread.join(timeout=2)
-    assert mouse.clicks == [(3, 4)]
-    assert calls["n"] >= 4
+    paused = ClickEngine(
+        FakeMouse(),
+        lambda: [ClickPoint(1, 1)],
+        lambda: 0.25,
+        lambda *_args, **_kwargs: None,
+        lambda stop, _interval: stop.wait(2),
+    )
+
+    def on_chord():
+        apply_emergency_stop(engine)
+        apply_emergency_stop(paused)
+
+    hotkey = HotKey(HotKey.parse(EMERGENCY_STOP_SPEC), on_chord)
+    assert engine.start() is True
+    assert started.wait(1)
+    assert engine.is_running
+    assert not paused.is_running
+
+    hotkey.press(Key.ctrl)
+    hotkey.press(KeyCode.from_char("s"))
+    assert engine.is_running
+    hotkey.press(KeyCode.from_char("t"))
+    assert not engine.is_running
+    assert not paused.is_running
+    frozen = list(mouse.clicks)
+    paused_clicks = list(paused._mouse.clicks)
+
+    hotkey.release(KeyCode.from_char("t"))
+    hotkey.press(KeyCode.from_char("t"))
+    time.sleep(0.1)
+    assert not engine.is_running
+    assert not paused.is_running
+    assert mouse.clicks == frozen
+    assert paused._mouse.clicks == paused_clicks
 
 
 def test_default_sleep_returns_when_stopped():

@@ -1,4 +1,4 @@
-"""Repeat the active click list until pause or quit."""
+"""Repeat the active click list until pause, emergency stop, or quit."""
 
 from __future__ import annotations
 
@@ -19,14 +19,12 @@ class ClickEngine:
         get_interval: Callable[[], float],
         on_event: EventCallback,
         sleep: Sleep | None = None,
-        should_yield: Callable[[], bool] | None = None,
     ) -> None:
         self._mouse = mouse
         self._get_points = get_points
         self._get_interval = get_interval
         self._on_event = on_event
         self._sleep = sleep or default_sleep
-        self._should_yield = should_yield or (lambda: False)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -75,13 +73,8 @@ class ClickEngine:
                 for index, point in enumerate(points):
                     if self._stop.is_set() or generation != self._generation:
                         break
-                    while self._should_yield():
-                        # The pointer is over this window, or the user just moved it.
-                        # Leave it alone so Pause can be clicked.
-                        if self._stop.wait(0.03) or generation != self._generation:
-                            return
-                    if self._stop.is_set() or generation != self._generation:
-                        break
+                    # Pointer movement, a stopped pointer, and screen changes
+                    # do not pause this loop. stop() is pause, close, or Ctrl+S+T.
                     try:
                         self._mouse.click(int(point.x), int(point.y))
                     except Exception as exc:
@@ -114,6 +107,12 @@ class ClickEngine:
             self._on_event(kind, **payload)
         except Exception as exc:
             print(f"AutoClicker event failed: {exc}", file=sys.stderr)
+
+
+def apply_emergency_stop(engine: ClickEngine) -> None:
+    """Ctrl+S+T pauses a run. It never starts clicking."""
+
+    engine.stop()
 
 
 def default_sleep(stop: threading.Event, get_interval: Callable[[], float]) -> bool:
