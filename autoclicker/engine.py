@@ -66,6 +66,9 @@ class ClickEngine:
     def _loop(self, generation: int) -> None:
         try:
             while not self._stop.is_set() and generation == self._generation:
+                # Live settings, not the list from when Play was pressed.
+                # Read again before every click so an on/off change is used
+                # on this pass when the spot has not been clicked yet.
                 points = list(self._get_points() or [])
                 if not _any_enabled(points):
                     self._emit("empty")

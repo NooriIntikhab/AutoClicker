@@ -269,6 +269,53 @@ def test_turning_a_spot_off_skips_it_without_stopping():
     assert mouse.clicks[1:] == [(2, 2), (2, 2), (2, 2)]
 
 
+def test_running_engine_picks_up_toggles_without_restarting():
+    """Off and on changes after Play are used on later clicks. The run is not restarted."""
+
+    mouse = FakeMouse()
+    state = {
+        "points": [
+            ClickPoint(1, 1, enabled=True),
+            ClickPoint(2, 2, enabled=False),
+            ClickPoint(3, 3, enabled=True),
+        ]
+    }
+
+    def sleep(stop, _get_interval):
+        clicks = list(mouse.clicks)
+        if clicks == [(1, 1)]:
+            state["points"] = [
+                ClickPoint(1, 1, enabled=False),
+                ClickPoint(2, 2, enabled=True),
+                ClickPoint(3, 3, enabled=True),
+            ]
+            return False
+        if len(clicks) >= 6:
+            stop.set()
+            return True
+        return False
+
+    engine = ClickEngine(
+        mouse,
+        lambda: state["points"],
+        lambda: 0.05,
+        lambda *_args, **_kwargs: None,
+        sleep,
+    )
+    assert engine.start() is True
+    engine._thread.join(timeout=2)
+    assert mouse.clicks == [
+        (1, 1),
+        (2, 2),
+        (3, 3),
+        (2, 2),
+        (3, 3),
+        (2, 2),
+    ]
+    assert (1, 1) not in mouse.clicks[1:]
+    assert not engine.is_running
+
+
 def test_default_sleep_returns_when_stopped():
     stop = threading.Event()
 

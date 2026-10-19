@@ -1,6 +1,6 @@
 import json
 
-from autoclicker.model import MAX_CLICKS, ClickPoint, display_set_name
+from autoclicker.model import ClickPoint, display_set_name
 from autoclicker.storage import load_settings, save_settings, settings_path
 
 
@@ -89,14 +89,14 @@ def test_old_settings_file_without_names_loads(tmp_path):
     ]
 
 
-def test_saved_stop_chord_falls_back_and_extra_points_trim(tmp_path):
+def test_saved_stop_chord_falls_back_and_long_sets_load(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(
         json.dumps(
             {
                 "version": 1,
                 "hotkey": "<ctrl>+t+s",
-                "slots": [{"name": "Wide", "points": [{"x": i, "y": 1} for i in range(MAX_CLICKS + 5)]}],
+                "slots": [{"name": "Wide", "points": [{"x": i, "y": 1} for i in range(35)]}],
             }
         ),
         encoding="utf-8",
@@ -104,7 +104,10 @@ def test_saved_stop_chord_falls_back_and_extra_points_trim(tmp_path):
     loaded = load_settings(path)
     assert loaded.hotkey == "<f6>"
     assert loaded.slots[0].name == "Wide"
-    assert len(loaded.slots[0].points) == MAX_CLICKS
+    assert len(loaded.slots[0].points) == 35
+    assert loaded.slots[0].points[0] == ClickPoint(0, 1, enabled=True)
+    assert loaded.slots[0].points[-1] == ClickPoint(34, 1, enabled=True)
+    assert all(point.enabled for point in loaded.slots[0].points)
 
 
 def test_settings_path_override(monkeypatch, tmp_path):

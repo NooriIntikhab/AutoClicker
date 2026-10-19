@@ -9,7 +9,6 @@ from pathlib import Path
 
 from autoclicker.engine import ClickEngine, apply_emergency_stop
 from autoclicker.model import (
-    MAX_CLICKS,
     SLOT_COUNT,
     ClickPoint,
     Settings,
@@ -23,6 +22,7 @@ from autoclicker.model import (
     gap_from_slider,
     is_stop_key,
     order_text,
+    parse_click_count,
     slider_from_gap,
 )
 
@@ -262,13 +262,14 @@ class AutoClickerApp:
         self._count_waiting = False
         self._count_active = False
         self._count_panel: tk.Frame | None = None
-        self.count_buttons: list[FlatButton] | None = None
+        self.count_entry: tk.Entry | None = None
+        self.count_hint: tk.Label | None = None
+        self.count_detail: tk.Label | None = None
         self.count_next: FlatButton | None = None
         self.confirm_accept: FlatButton | None = None
         self.confirm_retry: FlatButton | None = None
         self._count_dialog: tk.Toplevel | None = None
         self._confirm_dialog: tk.Toplevel | None = None
-        self._count_choice = 1
         self._count_result: int | None = None
         self.edit_buttons: list[FlatButton] = []
         self.power_buttons: list[FlatButton] = []
@@ -731,13 +732,12 @@ class AutoClickerApp:
         if not points:
             self.add_button.frame.pack_forget()
             return
-        full = len(points) >= MAX_CLICKS
         self.add_button.set_style(
-            text="Add click" if not full else f"{MAX_CLICKS} clicks",
-            enabled=not locked and not full,
-            bg=ACCENT if not full else DISABLED,
-            hover=ACCENT_HOVER if not full else DISABLED,
-            fg=TEXT if not full else DISABLED_TEXT,
+            text="Add click",
+            enabled=not locked,
+            bg=ACCENT,
+            hover=ACCENT_HOVER,
+            fg=TEXT,
         )
         if not self.add_button.frame.winfo_ismapped():
             self.add_button.pack(fill="x", pady=(10, 0), before=self.setup_button.frame)
@@ -1164,9 +1164,6 @@ class AutoClickerApp:
         if self._renaming:
             self.cancel_rename()
         slot = self.settings.slots[self.settings.active_slot]
-        if len(slot.points) >= MAX_CLICKS:
-            self._set_status(f"A set can hold {MAX_CLICKS} clicks.")
-            return
         self._busy = True
         self._user_cancelled = False
         if self.engine.is_running:
@@ -1246,7 +1243,6 @@ class AutoClickerApp:
     def ask_count(self, slot_index: int, existing: int) -> int | None:
         """Ask inside the main window so the prompt is not a second overlapping card."""
 
-        self._count_choice = existing if 1 <= existing <= MAX_CLICKS else 1
         self._count_result = None
         self._count_waiting = True
         panel = tk.Frame(self._shell, bg=BG)
@@ -1269,16 +1265,17 @@ class AutoClickerApp:
             font=(self.font, 14, "bold"),
             anchor="w",
         ).pack(fill="x", pady=(4, 4))
-        tk.Label(
+        self.count_detail = tk.Label(
             inner,
-            text=f"Pick up to {MAX_CLICKS}. They run in order, then start again at the first.",
+            text="Type any whole number of 1 or more. They run in order, then start again at the first.",
             bg=BG,
             fg=MUTED,
             font=(self.font, 10),
             wraplength=360,
             justify="left",
             anchor="w",
-        ).pack(fill="x")
+        )
+        self.count_detail.pack(fill="x")
         if existing:
             tk.Label(
                 inner,
@@ -1290,73 +1287,35 @@ class AutoClickerApp:
                 justify="left",
                 anchor="w",
             ).pack(fill="x", pady=(4, 0))
-        grid_host = tk.Frame(inner, bg=BG)
-        grid_host.pack(fill="x", pady=(14, 16))
-        grid_canvas = tk.Canvas(grid_host, bg=BG, highlightthickness=0, bd=0, height=1)
-        grid_scroll = tk.Scrollbar(
-            grid_host,
-            orient="vertical",
-            command=grid_canvas.yview,
-            bg=SURFACE_2,
-            troughcolor=SURFACE,
-            activebackground=ACCENT,
-            highlightthickness=0,
-            bd=0,
-            width=10,
+        starting = existing if isinstance(existing, int) and not isinstance(existing, bool) and existing >= 1 else 1
+        self.count_entry = tk.Entry(
+            inner,
+            bg=SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            font=(self.font, 14),
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
+            selectbackground=ACCENT,
+            selectforeground=TEXT,
         )
-        grid_canvas.configure(yscrollcommand=grid_scroll.set)
-        grid_canvas.pack(side="left", fill="both", expand=True)
-        row = tk.Frame(grid_canvas, bg=BG)
-        grid_window = grid_canvas.create_window((0, 0), window=row, anchor="nw")
-        self.count_buttons = []
-        columns = 6
-        for column in range(columns):
-            row.grid_columnconfigure(column, weight=1, uniform="count")
-        for number in range(1, MAX_CLICKS + 1):
-            button = FlatButton(
-                row,
-                str(number),
-                lambda n=number: self._choose_count(n),
-                (self.font, 10, "bold"),
-                SURFACE,
-                TEXT,
-                SURFACE_2,
-                pady=4,
-            )
-            button.grid(
-                row=(number - 1) // columns,
-                column=(number - 1) % columns,
-                sticky="ew",
-                padx=2,
-                pady=2,
-            )
-            self.count_buttons.append(button)
-        row.update_idletasks()
-        needed = max(1, row.winfo_reqheight())
-        visible = min(needed, 220)
-        grid_canvas.configure(height=visible, scrollregion=(0, 0, 0, needed))
-        if needed > 220:
-            grid_scroll.pack(side="right", fill="y")
-
-        def sync_count_grid(event, canvas=grid_canvas, window_id=grid_window):
-            if event.width > 1:
-                canvas.itemconfigure(window_id, width=event.width)
-
-        def scroll_count_grid(event, canvas=grid_canvas, tall=needed > 220):
-            if not tall:
-                return "break"
-            if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0:
-                canvas.yview_scroll(-1, "units")
-            else:
-                canvas.yview_scroll(1, "units")
-            return "break"
-
-        grid_canvas.bind("<Configure>", sync_count_grid)
-        for widget in (grid_canvas, row):
-            widget.bind("<Button-4>", scroll_count_grid)
-            widget.bind("<Button-5>", scroll_count_grid)
-            widget.bind("<MouseWheel>", scroll_count_grid)
-        self._paint_count_choices()
+        self.count_entry.insert(0, str(starting))
+        self.count_entry.pack(fill="x", pady=(14, 6), ipady=6)
+        self.count_entry.bind("<Return>", lambda _event: self._accept_count())
+        self.count_entry.bind("<Escape>", lambda _event: self._cancel_count())
+        self.count_hint = tk.Label(
+            inner,
+            text="",
+            bg=BG,
+            fg=AMBER,
+            font=(self.font, 10),
+            anchor="w",
+            justify="left",
+            wraplength=360,
+        )
+        self.count_hint.pack(fill="x", pady=(0, 12))
         actions = tk.Frame(inner, bg=BG)
         actions.pack(fill="x")
         cancel = FlatButton(
@@ -1383,8 +1342,15 @@ class AutoClickerApp:
         self.count_next.pack(side="right", fill="x", expand=True, padx=(6, 0))
         self._bind_count_keys()
         self._show_count_panel(panel)
+        try:
+            self.count_entry.focus_set()
+            self.count_entry.selection_range(0, "end")
+        except tk.TclError:
+            pass
         self.root.wait_variable(self._count_wake)
-        self.count_buttons = None
+        self.count_entry = None
+        self.count_hint = None
+        self.count_detail = None
         self.count_next = None
         self._count_panel = None
         self.root.after_idle(panel.destroy)
@@ -1392,26 +1358,23 @@ class AutoClickerApp:
             self._restore_main()
         return self._count_result
 
-    def _choose_count(self, number: int) -> None:
-        self._count_choice = number
-        self._paint_count_choices()
-
-    def _paint_count_choices(self) -> None:
-        if not self.count_buttons:
-            return
-        for number, button in enumerate(self.count_buttons, start=1):
-            selected = number == self._count_choice
-            button.set_style(
-                bg=ACCENT if selected else SURFACE,
-                hover=ACCENT_HOVER if selected else SURFACE_2,
-                fg=TEXT,
-            )
-
-    def _accept_count(self) -> None:
+    def _accept_count(self) -> str:
         if not self._count_waiting:
-            return
-        self._count_result = self._count_choice
+            return "break"
+        raw = ""
+        if self.count_entry is not None:
+            try:
+                raw = self.count_entry.get()
+            except tk.TclError:
+                raw = ""
+        count = parse_click_count(raw)
+        if count is None:
+            if self.count_hint is not None:
+                self.count_hint.configure(text="Type a whole number of 1 or more.")
+            return "break"
+        self._count_result = count
         self._finish_count_wait()
+        return "break"
 
     def _cancel_count(self) -> None:
         if not self._count_waiting:
@@ -1445,11 +1408,9 @@ class AutoClickerApp:
     def _bind_count_keys(self) -> None:
         self.root.bind("<Escape>", lambda _event: self._cancel_count())
         self.root.bind("<Return>", lambda _event: self._accept_count())
-        for number in range(1, 10):
-            self.root.bind(str(number), lambda _event, n=number: self._choose_count(n))
 
     def _unbind_count_keys(self) -> None:
-        for sequence in ("<Escape>", "<Return>", "1", "2", "3", "4", "5", "6", "7", "8", "9"):
+        for sequence in ("<Escape>", "<Return>"):
             try:
                 self.root.unbind(sequence)
             except tk.TclError:

@@ -7,7 +7,6 @@ import re
 from dataclasses import dataclass, field
 
 SLOT_COUNT = 5
-MAX_CLICKS = 30
 MAX_NAME_LENGTH = 32
 MIN_INTERVAL = 0.05
 MAX_INTERVAL = 2.0
@@ -79,7 +78,7 @@ class ClickSet:
         self.name = clean_name(self.name)
         self.points = [
             point for point in list(self.points) if isinstance(point, ClickPoint)
-        ][:MAX_CLICKS]
+        ]
 
 
 def default_slots() -> list[ClickSet]:
@@ -191,6 +190,25 @@ def is_stop_key(spec: object) -> bool:
     return _parts_of_hotkey(spec) == ([], [EMERGENCY_STOP_SPEC])
 
 
+def parse_click_count(value: object) -> int | None:
+    """A whole number of clicks, 1 or more. Anything else is not a count."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not re.fullmatch(r"\d+", text):
+            return None
+        number = int(text)
+    else:
+        return None
+    if number < 1:
+        return None
+    return number
+
+
 def order_text(count: int) -> str:
     if count <= 0:
         return "No clicks in this set yet"
@@ -242,7 +260,7 @@ class Settings:
                     "name": clean_name(slot.name),
                     "points": [
                         {"x": point.x, "y": point.y, "on": bool(point.enabled)}
-                        for point in list(slot.points)[:MAX_CLICKS]
+                        for point in list(slot.points)
                         if isinstance(point, ClickPoint)
                     ],
                 }
@@ -272,8 +290,8 @@ class SetupSession:
     """Confirm each new spot. Spots already saved stay unless the count shrinks."""
 
     def __init__(self, count: int, existing: list[ClickPoint] | None = None) -> None:
-        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_CLICKS:
-            raise ValueError(f"count must be from 1 to {MAX_CLICKS}")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("count must be a whole number of 1 or more")
         kept: list[ClickPoint] = []
         if existing:
             for point in existing:
@@ -323,7 +341,7 @@ def _fit_slots(slots: list[ClickSet]) -> list[ClickSet]:
     while len(fitted) < SLOT_COUNT:
         fitted.append(ClickSet())
     for slot in fitted:
-        slot.points = list(slot.points[:MAX_CLICKS])
+        slot.points = list(slot.points)
     return fitted
 
 
@@ -410,8 +428,6 @@ def _parse_points(slot: object) -> list[ClickPoint]:
         if x is None or y is None:
             continue
         points.append(ClickPoint(x, y, enabled=_parse_on(raw)))
-        if len(points) == MAX_CLICKS:
-            break
     return points
 
 
