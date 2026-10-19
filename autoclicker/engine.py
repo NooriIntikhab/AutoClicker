@@ -1,4 +1,4 @@
-"""Repeat the active click list until pause, emergency stop, or quit."""
+"""Repeat the active click list until pause, F8, or quit."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ class ClickEngine:
             if self._thread and self._thread.is_alive() and not self._stop.is_set():
                 return True
             points = list(self._get_points() or [])
-            if not points:
+            if not _any_enabled(points):
                 self._emit("empty")
                 return False
             # Release a previous loop without waiting on it. Waiting here can
@@ -67,14 +67,23 @@ class ClickEngine:
         try:
             while not self._stop.is_set() and generation == self._generation:
                 points = list(self._get_points() or [])
-                if not points:
+                if not _any_enabled(points):
                     self._emit("empty")
                     break
-                for index, point in enumerate(points):
+                for index in range(len(points)):
                     if self._stop.is_set() or generation != self._generation:
                         break
+                    current = list(self._get_points() or [])
+                    if not _any_enabled(current):
+                        self._emit("empty")
+                        return
+                    if index >= len(current):
+                        break
+                    point = current[index]
+                    if not getattr(point, "enabled", True):
+                        continue
                     # Pointer movement, a stopped pointer, and screen changes
-                    # do not pause this loop. stop() is pause, close, or Ctrl+S+T.
+                    # do not pause this loop. stop() is pause, close, or F8.
                     try:
                         self._mouse.click(int(point.x), int(point.y))
                     except Exception as exc:
@@ -84,7 +93,7 @@ class ClickEngine:
                             message="Could not click. Check input permissions for this app.",
                         )
                         return
-                    self._emit("click", index=index, count=len(points))
+                    self._emit("click", index=index, count=len(current))
                     if self._sleep(self._stop, self._interval):
                         return
         finally:
@@ -109,8 +118,12 @@ class ClickEngine:
             print(f"AutoClicker event failed: {exc}", file=sys.stderr)
 
 
+def _any_enabled(points: Sequence[object]) -> bool:
+    return any(getattr(point, "enabled", True) for point in points)
+
+
 def apply_emergency_stop(engine: ClickEngine) -> None:
-    """Ctrl+S+T pauses a run. It never starts clicking."""
+    """F8 pauses a run. It never starts clicking."""
 
     engine.stop()
 

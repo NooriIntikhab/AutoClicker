@@ -58,7 +58,7 @@ class FakeHotkeys:
 
 class FakeEmergency:
     def __init__(self):
-        self.spec = "<ctrl>+s+t"
+        self.spec = "<f8>"
         self.callback = None
         self.started = False
         self.stopped = False
@@ -162,8 +162,14 @@ def test_window_has_five_sets_and_highlights_the_one_in_use(app):
     from autoclicker.model import ClickPoint
     from autoclicker.ui import ACCENT
 
-    assert [button.text() for button in app.slot_buttons] == ["1", "2", "3", "4", "5"]
-    assert "Set 1 is in use" in app.slot_caption.cget("text")
+    assert [button.text() for button in app.slot_buttons] == [
+        "Set 1",
+        "Set 2",
+        "Set 3",
+        "Set 4",
+        "Set 5",
+    ]
+    assert app.slot_caption.cget("text") == "Set 1 is in use"
     assert app.slot_buttons[0].bg == ACCENT
     app.play_button.invoke()
     assert not app.engine.is_running
@@ -171,7 +177,7 @@ def test_window_has_five_sets_and_highlights_the_one_in_use(app):
     app.settings.slots[3].points = [ClickPoint(3, 4)]
     app.on_slot_clicked(3)
     assert app.settings.active_slot == 3
-    assert "Set 4 is in use" in app.slot_caption.cget("text")
+    assert app.slot_caption.cget("text") == "Set 4 is in use"
     assert app.slot_buttons[3].bg == ACCENT
     assert app.slot_buttons[0].bg != ACCENT
 
@@ -182,7 +188,7 @@ def test_setup_saves_confirmed_spots_in_order(app):
     app.root.after(4000, app.cancel_setup)
     app.run_setup()
     assert [(point.x, point.y) for point in app.settings.slots[0].points] == points
-    assert "Saved 3 clicks in set 1" in app.status_label.cget("text")
+    assert "Saved 3 clicks in Set 1" in app.status_label.cget("text")
     assert "1 → 2 → 3" in app.order_label.cget("text")
     loaded = app.load()
     assert [(point.x, point.y) for point in loaded.slots[0].points] == points
@@ -244,6 +250,113 @@ def test_cancel_keeps_the_old_set(app):
     app.root.after(20, pump)
     app.run_setup()
     assert app.settings.active_points() == [ClickPoint(1, 1)]
+
+
+def test_each_spot_can_be_turned_off_while_clicking(app):
+    import time
+
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(1, 1), ClickPoint(2, 2)]
+    app.settings.slots[1].points = [ClickPoint(9, 9)]
+    app.settings.interval = 0.05
+    app.refresh()
+    assert [button.text() for button in app.power_buttons] == ["On", "On"]
+    # Window updates from the click thread can stall outside the real main loop.
+    app.engine._on_event = lambda *_args, **_kwargs: None
+
+    app._last_toggle = 0
+    app.toggle_play()
+    deadline = time.time() + 2
+    while not app.mouse_log.clicks and time.time() < deadline:
+        time.sleep(0.02)
+    assert app.engine.is_running
+
+    app.power_buttons[0].invoke()
+    app.root.update()
+    assert app.engine.is_running
+    assert app.power_buttons[0].text() == "Off"
+    assert app.settings.active_points()[0].enabled is False
+    assert app.load().slots[0].points[0].enabled is False
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        if app.mouse_log.clicks and app.mouse_log.clicks[-1] == (2, 2):
+            break
+        time.sleep(0.02)
+    start = len(app.mouse_log.clicks)
+    deadline = time.time() + 2
+    while len(app.mouse_log.clicks) < start + 3 and time.time() < deadline:
+        time.sleep(0.02)
+    assert app.mouse_log.clicks[start : start + 3] == [(2, 2), (2, 2), (2, 2)]
+    assert app.engine.is_running
+
+    app.power_buttons[0].invoke()
+    app.root.update()
+    assert app.power_buttons[0].text() == "On"
+    assert app.engine.is_running
+    mark = len(app.mouse_log.clicks)
+    deadline = time.time() + 2
+    while (1, 1) not in app.mouse_log.clicks[mark:] and time.time() < deadline:
+        time.sleep(0.02)
+    assert (1, 1) in app.mouse_log.clicks[mark:]
+    assert app.engine.is_running
+
+    app.power_buttons[0].invoke()
+    app.power_buttons[1].invoke()
+    app.root.update()
+    deadline = time.time() + 2
+    while app.engine.is_running and time.time() < deadline:
+        time.sleep(0.02)
+    assert not app.engine.is_running
+    app._last_toggle = 0
+    app._block_start_until = 0
+    app.play_button.invoke()
+    app.root.update()
+    assert app.status_label.cget("text") == "Nothing in this set is turned on."
+    assert not app.engine.is_running
+    assert app.mouse_log.clicks[-1] != (9, 9)
+
+    app.on_slot_clicked(1)
+    assert app.power_buttons[0].text() == "On"
+    app.power_buttons[0].invoke()
+    assert app.settings.slots[1].points[0].enabled is False
+    assert app.settings.slots[0].points[0].enabled is False
+    assert app.settings.slots[0].points[1].enabled is False
+    assert app.load().slots[1].points[0].enabled is False
+
+
+def test_editing_a_spot_keeps_whether_it_is_on(app):
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [
+        ClickPoint(1, 1, enabled=False),
+        ClickPoint(2, 2, enabled=True),
+    ]
+    app.refresh()
+    assert app.power_buttons[0].text() == "Off"
+
+    def pump():
+        if app.capture.armed and app._banner_title.cget("text").startswith("New spot"):
+            app.root.after(20, accept_later)
+            app.capture.emit(50, 60)
+            return
+        app.root.after(20, pump)
+
+    def accept_later():
+        if app.confirm_accept is not None:
+            app.confirm_accept.invoke()
+            return
+        app.root.after(20, accept_later)
+
+    app.root.after(20, pump)
+    app.root.after(4000, app.cancel_setup)
+    app.edit_point(0)
+    assert app.settings.active_points() == [
+        ClickPoint(50, 60, enabled=False),
+        ClickPoint(2, 2, enabled=True),
+    ]
+    assert app.power_buttons[0].text() == "Off"
+    assert app.load().slots[0].points[0].enabled is False
 
 
 def test_edit_replaces_one_spot(app):
@@ -351,9 +464,10 @@ def test_pointer_movement_does_not_stop_clicking(app):
     app.engine.stop()
 
 
-def test_window_shows_emergency_stop_and_keeps_the_play_key(app):
-    assert app.emergency_label.cget("text") == "Ctrl + S + T stops clicking"
-    assert app.emergency.spec == "<ctrl>+s+t"
+def test_window_shows_f8_stop_and_keeps_the_play_key(app):
+    assert app.emergency_label.cget("text") == "F8 stops clicking"
+    assert app.emergency.spec == "<f8>"
+    assert "ctrl" not in app.emergency.spec
     assert app.emergency.started
     assert app.settings.hotkey == "<f6>"
     assert app.hotkeys.spec == "<f6>"
@@ -362,11 +476,11 @@ def test_window_shows_emergency_stop_and_keeps_the_play_key(app):
     app.root.update()
     assert app.settings.hotkey == "s"
     assert app.hotkeys.spec == "s"
-    assert app.emergency.spec == "<ctrl>+s+t"
+    assert app.emergency.spec == "<f8>"
     assert app.emergency.callback == app._emergency_pressed
 
 
-def test_ctrl_s_t_pauses_and_does_not_start(app):
+def test_f8_pauses_and_does_not_start(app):
     import time
 
     from autoclicker.model import ClickPoint
@@ -403,7 +517,7 @@ def test_ctrl_s_t_pauses_and_does_not_start(app):
     assert app.play_button.text() == "Play"
 
 
-def test_chord_does_not_start_when_the_play_key_is_s(app):
+def test_f8_does_not_start_when_the_play_key_is_s(app):
     from autoclicker.model import ClickPoint
 
     app.settings.slots[0].points = [ClickPoint(1, 1)]
@@ -417,6 +531,235 @@ def test_chord_does_not_start_when_the_play_key_is_s(app):
     app.root.update()
     assert not app.engine.is_running
     assert app.mouse_log.clicks == []
+
+
+def test_play_key_can_be_a_chord_and_changed_again(app):
+    app.hotkey_button.invoke()
+    app.hotkeys.emit_key("<ctrl>+a")
+    app.root.update()
+    assert app.settings.hotkey == "<ctrl>+a"
+    assert app.hotkey_value.cget("text") == "Ctrl + A"
+    assert app.load().hotkey == "<ctrl>+a"
+
+    app.hotkey_button.invoke()
+    app.hotkeys.emit_key("<shift>+<f8>")
+    app.root.update()
+    assert app.settings.hotkey == "<shift>+<f8>"
+    assert app.hotkey_value.cget("text") == "Shift + F8"
+    assert app.load().hotkey == "<shift>+<f8>"
+    assert app.emergency.spec == "<f8>"
+
+    app.hotkey_button.invoke()
+    app.hotkeys.emit_key("<f8>")
+    app.root.update()
+    assert app.settings.hotkey == "<shift>+<f8>"
+    assert app.hotkeys.spec == "<shift>+<f8>"
+    assert app.load().hotkey == "<shift>+<f8>"
+    assert "f8" in app.status_label.cget("text").lower()
+
+
+def test_sets_can_be_named_and_renamed(app):
+    app.rename_button.invoke()
+    app.name_entry.insert(0, "Farm")
+    app.name_save.invoke()
+    assert app.slot_buttons[0].text() == "Farm"
+    assert app.slot_caption.cget("text") == "Farm is in use"
+    assert app.load().slots[0].name == "Farm"
+    assert app.slot_buttons[1].text() == "Set 2"
+
+    app.rename_button.invoke()
+    app.name_entry.delete(0, "end")
+    app.name_entry.insert(0, "Nope")
+    app.name_cancel.invoke()
+    assert app.settings.slots[0].name == "Farm"
+    assert app.slot_caption.cget("text") == "Farm is in use"
+    assert app.load().slots[0].name == "Farm"
+
+    app.rename_button.invoke()
+    app.name_entry.delete(0, "end")
+    app.name_entry.insert(0, "Barn")
+    app.name_save.invoke()
+    assert app.slot_buttons[0].text() == "Barn"
+    assert app.load().slots[0].name == "Barn"
+
+    app.rename_button.invoke()
+    app.name_entry.delete(0, "end")
+    app.name_entry.insert(0, "   ")
+    app.name_save.invoke()
+    assert app.settings.slots[0].name == ""
+    assert app.slot_buttons[0].text() == "Set 1"
+    assert app.slot_caption.cget("text") == "Set 1 is in use"
+
+
+def test_custom_name_shows_on_another_set(app):
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[2].name = "Farm"
+    app.settings.slots[2].points = [ClickPoint(4, 5)]
+    app.on_slot_clicked(2)
+    assert app.slot_buttons[2].text() == "Farm"
+    assert app.slot_caption.cget("text") == "Farm is in use"
+    assert app.slot_buttons[0].text() == "Set 1"
+
+
+def test_add_click_keeps_the_spots_already_saved(app):
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(5, 6), ClickPoint(7, 8)]
+    app.refresh()
+
+    def pump():
+        if app.capture.armed and app._banner_title.cget("text").startswith("Click spot"):
+            app.root.after(20, accept_later)
+            app.capture.emit(50, 60)
+            return
+        app.root.after(20, pump)
+
+    def accept_later():
+        if app.confirm_accept is not None:
+            app.confirm_accept.invoke()
+            return
+        app.root.after(20, accept_later)
+
+    app.root.after(20, pump)
+    app.root.after(4000, app.cancel_setup)
+    app.add_button.invoke()
+    assert app.settings.active_points() == [
+        ClickPoint(5, 6),
+        ClickPoint(7, 8),
+        ClickPoint(50, 60),
+    ]
+    assert app.load().slots[0].points == app.settings.active_points()
+
+
+def test_cancel_add_or_edit_keeps_the_saved_set(app):
+    from autoclicker.model import ClickPoint
+
+    saved = [ClickPoint(5, 6), ClickPoint(7, 8)]
+    app.settings.slots[0].points = list(saved)
+    app.persist()
+    app.refresh()
+
+    def cancel_when_armed():
+        if app.capture.armed:
+            app.cancel_setup()
+            return
+        app.root.after(20, cancel_when_armed)
+
+    app.root.after(20, cancel_when_armed)
+    app.root.after(4000, app.cancel_setup)
+    app.add_point()
+    assert app.settings.active_points() == saved
+
+    app.root.after(20, cancel_when_armed)
+    app.root.after(4000, app.cancel_setup)
+    app.edit_point(0)
+    assert app.settings.active_points() == saved
+    assert app.load().slots[0].points == saved
+
+
+def test_higher_count_asks_only_for_the_new_spots(app):
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(1, 1), ClickPoint(2, 2)]
+    app.refresh()
+    added = [(8, 8), (9, 9)]
+    state = {"phase": "select", "index": 0}
+
+    def pump():
+        phase = state["phase"]
+        if phase == "select" and app.count_buttons:
+            assert len(app.count_buttons) == 30
+            app.count_buttons[3].invoke()
+            state["phase"] = "next"
+            app.root.after(20, pump)
+            return
+        if phase == "next" and app.count_next is not None:
+            state["phase"] = "click"
+            app.root.after(20, pump)
+            app.count_next.invoke()
+            return
+        if phase == "click" and app.capture.armed:
+            if state["index"] == 0:
+                assert app._banner_title.cget("text") == "Click spot 3 of 4"
+            x, y = added[state["index"]]
+            state["phase"] = "confirm"
+            app.root.after(20, pump)
+            app.capture.emit(x, y)
+            return
+        if phase == "confirm" and app.confirm_accept is not None:
+            state["index"] += 1
+            state["phase"] = "click" if state["index"] < len(added) else "done"
+            if state["phase"] != "done":
+                app.root.after(20, pump)
+            app.confirm_accept.invoke()
+            return
+        if phase != "done":
+            app.root.after(20, pump)
+
+    app.root.after(20, pump)
+    app.root.after(4000, app.cancel_setup)
+    app.run_setup()
+    assert [(point.x, point.y) for point in app.settings.active_points()] == [
+        (1, 1),
+        (2, 2),
+        (8, 8),
+        (9, 9),
+    ]
+
+
+def test_cancel_while_adding_spots_keeps_the_saved_set(app):
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(1, 1), ClickPoint(2, 2)]
+    app.refresh()
+    state = {"phase": "select"}
+
+    def pump():
+        phase = state["phase"]
+        if phase == "select" and app.count_buttons:
+            app.count_buttons[3].invoke()
+            state["phase"] = "next"
+            app.root.after(20, pump)
+            return
+        if phase == "next" and app.count_next is not None:
+            state["phase"] = "click"
+            app.root.after(20, pump)
+            app.count_next.invoke()
+            return
+        if phase == "click" and app.capture.armed:
+            app.cancel_setup()
+            return
+        app.root.after(20, pump)
+
+    app.root.after(20, pump)
+    app.root.after(4000, app.cancel_setup)
+    app.run_setup()
+    assert app.settings.active_points() == [ClickPoint(1, 1), ClickPoint(2, 2)]
+
+
+def test_many_spots_scroll_inside_a_bounded_window(app):
+    from autoclicker.model import MAX_CLICKS, ClickPoint
+    from autoclicker.ui import MAX_POINT_LIST_HEIGHT
+
+    app.settings.slots[0].points = [ClickPoint(i, 1) for i in range(6)]
+    app.refresh()
+    app.root.update()
+    short = app.root.winfo_height()
+    app.settings.slots[0].points = [ClickPoint(i, 1) for i in range(MAX_CLICKS)]
+    app.refresh()
+    app.root.update()
+    tall = app.root.winfo_height()
+    assert len(app.edit_buttons) == MAX_CLICKS
+    assert app.points_canvas.winfo_height() <= MAX_POINT_LIST_HEIGHT
+    assert app.points_scrollbar.winfo_manager() == "pack"
+    assert tall < 900
+    assert tall - short < 180
+
+    app.settings.slots[0].points = [ClickPoint(1, 1)]
+    app.refresh()
+    app.root.update_idletasks()
+    assert app.points_scrollbar.winfo_manager() == ""
 
 
 def test_clicks_on_the_window_are_not_saved_as_spots(app):

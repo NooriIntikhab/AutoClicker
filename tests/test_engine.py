@@ -180,7 +180,7 @@ def test_stop_still_stops_when_nothing_yields():
     assert mouse.clicks == [(2, 2)]
 
 
-def test_ctrl_s_t_pauses_a_run_and_does_not_start_one():
+def test_f8_pauses_a_run_and_ctrl_s_t_does_not():
     from pynput.keyboard import HotKey, Key, KeyCode
 
     from autoclicker.devices import EMERGENCY_STOP_SPEC
@@ -207,11 +207,12 @@ def test_ctrl_s_t_pauses_a_run_and_does_not_start_one():
         lambda stop, _interval: stop.wait(2),
     )
 
-    def on_chord():
+    def on_f8():
         apply_emergency_stop(engine)
         apply_emergency_stop(paused)
 
-    hotkey = HotKey(HotKey.parse(EMERGENCY_STOP_SPEC), on_chord)
+    assert EMERGENCY_STOP_SPEC == "<f8>"
+    hotkey = HotKey(HotKey.parse(EMERGENCY_STOP_SPEC), on_f8)
     assert engine.start() is True
     assert started.wait(1)
     assert engine.is_running
@@ -219,20 +220,53 @@ def test_ctrl_s_t_pauses_a_run_and_does_not_start_one():
 
     hotkey.press(Key.ctrl)
     hotkey.press(KeyCode.from_char("s"))
-    assert engine.is_running
     hotkey.press(KeyCode.from_char("t"))
+    assert engine.is_running
+    assert not paused.is_running
+    hotkey.release(Key.ctrl)
+    hotkey.release(KeyCode.from_char("s"))
+    hotkey.release(KeyCode.from_char("t"))
+
+    # GlobalHotKeys normalizes F8 to the same key code HotKey.parse stores.
+    f8 = KeyCode.from_vk(Key.f8.value.vk)
+    hotkey.press(f8)
     assert not engine.is_running
     assert not paused.is_running
     frozen = list(mouse.clicks)
     paused_clicks = list(paused._mouse.clicks)
-
-    hotkey.release(KeyCode.from_char("t"))
-    hotkey.press(KeyCode.from_char("t"))
+    hotkey.release(f8)
+    hotkey.press(f8)
     time.sleep(0.1)
     assert not engine.is_running
     assert not paused.is_running
     assert mouse.clicks == frozen
     assert paused._mouse.clicks == paused_clicks
+
+
+def test_turning_a_spot_off_skips_it_without_stopping():
+    mouse = FakeMouse()
+    state = {"points": [ClickPoint(1, 1), ClickPoint(2, 2)]}
+
+    def sleep(stop, _get_interval):
+        if len(mouse.clicks) >= 4:
+            stop.set()
+            return True
+        if mouse.clicks == [(1, 1)]:
+            state["points"] = [ClickPoint(1, 1, enabled=False), ClickPoint(2, 2)]
+        return False
+
+    engine = ClickEngine(
+        mouse,
+        lambda: state["points"],
+        lambda: 0.05,
+        lambda *_args, **_kwargs: None,
+        sleep,
+    )
+    engine.start()
+    engine._thread.join(timeout=2)
+    assert mouse.clicks[0] == (1, 1)
+    assert (1, 1) not in mouse.clicks[1:]
+    assert mouse.clicks[1:] == [(2, 2), (2, 2), (2, 2)]
 
 
 def test_default_sleep_returns_when_stopped():
