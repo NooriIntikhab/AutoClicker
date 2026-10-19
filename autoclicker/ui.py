@@ -9,15 +9,19 @@ from pathlib import Path
 
 from autoclicker.engine import ClickEngine, apply_emergency_stop
 from autoclicker.model import (
+    MAX_CLICKS,
     SLOT_COUNT,
     ClickPoint,
     Settings,
     SetupSession,
+    canonical_hotkey,
+    clean_name,
     contains_point,
+    display_set_name,
     format_hotkey,
     format_speed,
     gap_from_slider,
-    is_valid_hotkey,
+    is_emergency_chord,
     order_text,
     slider_from_gap,
 )
@@ -39,6 +43,8 @@ DISABLED = "#2a2c33"
 DISABLED_TEXT = "#6d717a"
 TRACK = "#3a3d46"
 KNOB = "#ffffff"
+MAIN_WIDTH = 400
+MAX_POINT_LIST_HEIGHT = 240
 
 
 def choose_font(root: tk.Misc) -> str:
@@ -234,6 +240,7 @@ class AutoClickerApp:
         self.font = choose_font(root)
         self._busy = False
         self._rebinding = False
+        self._renaming = False
         self._closing = False
         self._banner_active = False
         self._chromeless = False
@@ -385,29 +392,85 @@ class AutoClickerApp:
             cell.grid(row=0, column=index, sticky="ew", padx=3)
             button = FlatButton(
                 cell,
-                str(index + 1),
+                display_set_name(self.settings.slots[index].name, index),
                 lambda i=index: self.on_slot_clicked(i),
-                (self.font, 13, "bold"),
+                (self.font, 9, "bold"),
                 SURFACE,
                 TEXT,
                 SURFACE_2,
                 pady=8,
             )
             button.pack(fill="x")
+            button.label.configure(wraplength=64)
             mark = tk.Frame(cell, bg=BG, height=3)
             mark.pack(fill="x", pady=(5, 0))
             mark.pack_propagate(False)
             self.slot_buttons.append(button)
             self.slot_marks.append(mark)
+        self.caption_row = tk.Frame(self._body, bg=BG)
+        self.caption_row.pack(fill="x", pady=(8, 12))
         self.slot_caption = tk.Label(
-            self._body,
+            self.caption_row,
             text="",
             bg=BG,
             fg=MUTED,
             font=(self.font, 10),
             anchor="w",
+            justify="left",
+            wraplength=240,
         )
-        self.slot_caption.pack(fill="x", pady=(8, 12))
+        self.slot_caption.pack(side="left", fill="x", expand=True)
+        self.rename_button = FlatButton(
+            self.caption_row,
+            "Rename",
+            self.start_rename,
+            (self.font, 10, "bold"),
+            SURFACE_2,
+            TEXT,
+            "#3a3d46",
+            pady=4,
+        )
+        self.rename_button.pack(side="right")
+        self._rename_box = tk.Frame(self.caption_row, bg=BG)
+        self.name_entry = tk.Entry(
+            self._rename_box,
+            bg=SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            font=(self.font, 11),
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=ACCENT,
+            selectbackground=ACCENT,
+            selectforeground=TEXT,
+            width=16,
+        )
+        self.name_entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 8))
+        self.name_cancel = FlatButton(
+            self._rename_box,
+            "Cancel",
+            self.cancel_rename,
+            (self.font, 10, "bold"),
+            SURFACE_2,
+            TEXT,
+            "#3a3d46",
+            pady=4,
+        )
+        self.name_cancel.pack(side="left", padx=(0, 4))
+        self.name_save = FlatButton(
+            self._rename_box,
+            "Save",
+            self.save_rename,
+            (self.font, 10, "bold"),
+            ACCENT,
+            TEXT,
+            ACCENT_HOVER,
+            pady=4,
+        )
+        self.name_save.pack(side="left")
+        self.name_entry.bind("<Return>", lambda _event: self.save_rename())
+        self.name_entry.bind("<Escape>", lambda _event: self.cancel_rename())
 
         self._section(self._body, "Clicks").pack(fill="x", pady=(0, 4))
         self.order_label = tk.Label(
@@ -418,10 +481,57 @@ class AutoClickerApp:
             font=(self.font, 10),
             anchor="w",
             justify="left",
+            wraplength=360,
         )
         self.order_label.pack(fill="x", pady=(0, 6))
         self.points_box = tk.Frame(self._body, bg=BG)
         self.points_box.pack(fill="x")
+        self._points_empty = tk.Label(
+            self.points_box,
+            text="Choose how many spots to click, then click each spot on your screen.",
+            bg=BG,
+            fg=MUTED,
+            font=(self.font, 10),
+            wraplength=350,
+            justify="left",
+            anchor="w",
+        )
+        self._points_scroll_host = tk.Frame(self.points_box, bg=BG)
+        self.points_canvas = tk.Canvas(
+            self._points_scroll_host,
+            bg=BG,
+            highlightthickness=0,
+            bd=0,
+            height=1,
+        )
+        self.points_scrollbar = tk.Scrollbar(
+            self._points_scroll_host,
+            orient="vertical",
+            command=self.points_canvas.yview,
+            bg=SURFACE_2,
+            troughcolor=SURFACE,
+            activebackground=ACCENT,
+            highlightthickness=0,
+            bd=0,
+            width=10,
+        )
+        self.points_canvas.configure(yscrollcommand=self.points_scrollbar.set)
+        self.points_inner = tk.Frame(self.points_canvas, bg=BG)
+        self._points_window = self.points_canvas.create_window(
+            (0, 0), window=self.points_inner, anchor="nw"
+        )
+        self.points_canvas.pack(side="left", fill="both", expand=True)
+        self.points_canvas.bind("<Configure>", self._sync_points_width)
+        self.add_button = FlatButton(
+            self._body,
+            "Add click",
+            self.add_point,
+            (self.font, 11, "bold"),
+            ACCENT,
+            TEXT,
+            ACCENT_HOVER,
+            pady=8,
+        )
         self.setup_button = FlatButton(
             self._body,
             "Set up clicks",
@@ -543,48 +653,60 @@ class AutoClickerApp:
 
     def _place_initial(self) -> None:
         self.root.update_idletasks()
-        width = 400
+        width = MAIN_WIDTH
         height = max(self._shell.winfo_reqheight() + 2, 520)
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = max(0, (screen_w - width) // 2)
         y = max(0, (screen_h - height) // 2)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
+        self.root.update_idletasks()
+        self._sync_points_width()
         self.speed_bar.redraw()
 
     def _fit_height(self) -> None:
         if self._banner_active or self._count_active or self._closing:
             return
         self.root.update_idletasks()
-        width = 400
+        width = MAIN_WIDTH
         height = self._shell.winfo_reqheight() + 2
         x = self.root.winfo_x()
         y = self.root.winfo_y()
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
+    def _set_name(self, index: int | None = None) -> str:
+        slot = self.settings.active_slot if index is None else index
+        return display_set_name(self.settings.slots[slot].name, slot)
+
     def refresh(self) -> None:
         slot = self.settings.active_slot
+        locked = self._interactions_locked()
         for index, button in enumerate(self.slot_buttons):
             selected = index == slot
             button.set_style(
+                text=self._set_name(index),
                 bg=ACCENT if selected else SURFACE,
                 hover=ACCENT_HOVER if selected else SURFACE_2,
                 fg=TEXT,
-                enabled=not self._interactions_locked(),
+                enabled=not locked,
             )
             self.slot_marks[index].configure(bg=ACCENT if selected else BG)
-        self.slot_caption.configure(text=f"Set {slot + 1} is in use")
+        if not self._renaming:
+            self._show_caption()
+            self.slot_caption.configure(text=f"{self._set_name()} is in use")
+            self.rename_button.set_style(enabled=not locked)
         points = self.settings.slots[slot].points
         self.order_label.configure(text=order_text(len(points)))
         self._rebuild_points(points)
         empty = not points
         self.setup_button.set_style(
-            text="Set up clicks" if empty else "Set up again",
+            text="Set up clicks" if empty else "Change how many",
             bg=ACCENT if empty else SURFACE_2,
             hover=ACCENT_HOVER if empty else "#3a3d46",
             fg=TEXT,
-            enabled=not self._interactions_locked(),
+            enabled=not locked,
         )
+        self._sync_add_button(points, locked)
         self.hotkey_value.configure(text=format_hotkey(self.settings.hotkey))
         self.hotkey_button.set_style(
             text="Cancel" if self._rebinding else "Change",
@@ -601,45 +723,59 @@ class AutoClickerApp:
             enabled=minimize_enabled,
         )
         if not self.engine.is_running and not self._rebinding:
-            self._set_status(f"Paused · set {slot + 1}")
+            self._set_status(f"Paused · {self._set_name()}")
         self._fit_height()
+
+    def _sync_add_button(self, points: list[ClickPoint], locked: bool) -> None:
+        if not points:
+            self.add_button.frame.pack_forget()
+            return
+        full = len(points) >= MAX_CLICKS
+        self.add_button.set_style(
+            text="Add click" if not full else f"{MAX_CLICKS} clicks",
+            enabled=not locked and not full,
+            bg=ACCENT if not full else DISABLED,
+            hover=ACCENT_HOVER if not full else DISABLED,
+            fg=TEXT if not full else DISABLED_TEXT,
+        )
+        if not self.add_button.frame.winfo_ismapped():
+            self.add_button.pack(fill="x", pady=(10, 0), before=self.setup_button.frame)
 
     def _rebuild_points(self, points: list[ClickPoint]) -> None:
         self.edit_buttons = []
-        for child in self.points_box.winfo_children():
+        for child in self.points_inner.winfo_children():
             child.destroy()
         if not points:
-            tk.Label(
-                self.points_box,
-                text="Choose how many spots to click, then click each spot on your screen.",
-                bg=BG,
-                fg=MUTED,
-                font=(self.font, 10),
-                wraplength=350,
-                justify="left",
-                anchor="w",
-            ).pack(fill="x", pady=(0, 4))
+            self._points_scroll_host.pack_forget()
+            if not self._points_empty.winfo_ismapped():
+                self._points_empty.pack(fill="x", pady=(0, 4))
+            self.points_canvas.configure(height=1)
             return
+        self._points_empty.pack_forget()
+        if not self._points_scroll_host.winfo_ismapped():
+            self._points_scroll_host.pack(fill="x")
         locked = self._interactions_locked()
         for index, point in enumerate(points):
-            row = tk.Frame(self.points_box, bg=SURFACE)
+            row = tk.Frame(self.points_inner, bg=SURFACE)
             row.pack(fill="x", pady=3)
-            tk.Label(
+            number = tk.Label(
                 row,
                 text=str(index + 1),
                 bg=SURFACE,
                 fg=ACCENT,
                 font=(self.font, 11, "bold"),
-                width=2,
-            ).pack(side="left", padx=(10, 4), pady=6)
-            tk.Label(
+                width=3,
+            )
+            number.pack(side="left", padx=(10, 4), pady=6)
+            coords = tk.Label(
                 row,
                 text=f"{point.x}, {point.y}",
                 bg=SURFACE,
                 fg=TEXT,
                 font=(self.font, 10),
                 anchor="w",
-            ).pack(side="left", fill="x", expand=True)
+            )
+            coords.pack(side="left", fill="x", expand=True)
             edit = FlatButton(
                 row,
                 "Edit",
@@ -654,6 +790,51 @@ class AutoClickerApp:
             edit.set_style(enabled=not locked)
             edit.pack(side="right", padx=6, pady=4)
             self.edit_buttons.append(edit)
+            for widget in (row, number, coords, edit.frame, edit.label):
+                self._bind_point_wheel(widget)
+        self._bind_point_wheel(self.points_canvas)
+        self._bind_point_wheel(self.points_inner)
+        self.points_inner.update_idletasks()
+        content_height = max(1, self.points_inner.winfo_reqheight())
+        visible = min(content_height, MAX_POINT_LIST_HEIGHT)
+        self.points_canvas.configure(
+            height=visible,
+            scrollregion=(0, 0, 0, content_height),
+        )
+        self._sync_points_width()
+        if content_height > MAX_POINT_LIST_HEIGHT:
+            if not self.points_scrollbar.winfo_ismapped():
+                self.points_scrollbar.pack(side="right", fill="y")
+        else:
+            self.points_scrollbar.pack_forget()
+            self.points_canvas.yview_moveto(0)
+
+    def _sync_points_width(self, _event=None) -> None:
+        width = self.points_canvas.winfo_width()
+        if width > 1:
+            self.points_canvas.itemconfigure(self._points_window, width=width)
+
+    def _bind_point_wheel(self, widget) -> None:
+        widget.bind("<Button-4>", self._on_points_wheel)
+        widget.bind("<Button-5>", self._on_points_wheel)
+        widget.bind("<MouseWheel>", self._on_points_wheel)
+
+    def _on_points_wheel(self, event):
+        if not self.points_scrollbar.winfo_manager():
+            return "break"
+        if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0:
+            self.points_canvas.yview_scroll(-1, "units")
+        else:
+            self.points_canvas.yview_scroll(1, "units")
+        return "break"
+
+    def _show_caption(self) -> None:
+        if self._rename_box.winfo_ismapped():
+            self._rename_box.pack_forget()
+        if not self.slot_caption.winfo_ismapped():
+            self.slot_caption.pack(side="left", fill="x", expand=True)
+        if not self.rename_button.frame.winfo_ismapped():
+            self.rename_button.pack(side="right")
 
     def _sync_play_button(self) -> None:
         running = self.engine.is_running
@@ -695,19 +876,19 @@ class AutoClickerApp:
             pass
 
     def _apply_engine_event(self, kind: str, payload: dict) -> None:
-        slot = self.settings.active_slot + 1
+        name = self._set_name()
         if kind == "started":
-            self._set_status(f"Clicking set {slot}")
+            self._set_status(f"Clicking {name}")
         elif kind == "click":
             self._set_status(
-                f"Clicking set {slot} · spot {payload['index'] + 1} of {payload['count']}"
+                f"Clicking {name} · spot {payload['index'] + 1} of {payload['count']}"
             )
         elif kind == "empty":
             self._pending_status = "Set up clicks for this set first."
         elif kind == "error":
             self._pending_status = payload.get("message") or "Could not click."
         elif kind == "stopped":
-            message = self._pending_status or f"Paused · set {slot}"
+            message = self._pending_status or f"Paused · {name}"
             self._pending_status = None
             self._set_status(message)
         self._sync_play_button()
@@ -735,11 +916,13 @@ class AutoClickerApp:
     def on_slot_clicked(self, index: int) -> None:
         if self._interactions_locked():
             return
+        if self._renaming:
+            self.cancel_rename()
         self.settings.active_slot = index
         self.persist()
         self.refresh()
         if self.engine.is_running:
-            self._set_status(f"Clicking set {index + 1}")
+            self._set_status(f"Clicking {self._set_name(index)}")
         if not self.settings.slots[index].points:
             if self.engine.is_running:
                 self.engine.stop()
@@ -763,13 +946,15 @@ class AutoClickerApp:
     def start_rebind(self) -> None:
         if self._interactions_locked():
             return
+        if self._renaming:
+            self.cancel_rename()
         self._rebinding = True
         try:
             self.hotkeys.clear_hotkey()
         except Exception as exc:
             print(f"AutoClicker could not pause the hotkey: {exc}", file=sys.stderr)
         self.refresh()
-        self._set_status("Press a key. Esc cancels.")
+        self._set_status("Press a key, or Ctrl, Alt, or Shift plus a key. Esc cancels.")
         try:
             self.hotkeys.capture_next_key(
                 lambda spec: self.root.after(0, lambda: self._finish_rebind(spec))
@@ -790,13 +975,15 @@ class AutoClickerApp:
         if not self._rebinding or self._closing:
             return
         self._rebinding = False
-        chosen = spec if spec and is_valid_hotkey(spec) else None
+        chosen = canonical_hotkey(spec) if spec else None
         if chosen is not None:
             self.settings.hotkey = chosen
             self.persist()
         self.apply_hotkey()
         self.refresh()
-        if chosen is not None:
+        if spec and is_emergency_chord(spec):
+            self._set_status("Ctrl + S + T always stops. Pick another key.")
+        elif chosen is not None:
             self._set_status(f"Play / pause is now {format_hotkey(chosen)}.")
 
     def apply_hotkey(self) -> None:
@@ -852,8 +1039,10 @@ class AutoClickerApp:
     def run_setup(self) -> None:
         if self._busy or self._closing:
             return
+        if self._renaming:
+            self.cancel_rename()
         slot_index = self.settings.active_slot
-        existing = len(self.settings.slots[slot_index].points)
+        existing_points = list(self.settings.slots[slot_index].points)
         self._busy = True
         self._user_cancelled = False
         if self.engine.is_running:
@@ -861,14 +1050,16 @@ class AutoClickerApp:
         self.refresh()
         saved_message = None
         try:
-            count = self.ask_count(slot_index, existing)
+            count = self.ask_count(slot_index, len(existing_points))
             if count is None:
                 return
-            session = SetupSession(count)
+            session = SetupSession(count, existing_points)
             if self._capture_session(session):
                 self.settings.slots[slot_index].points = list(session.points)
                 self.persist()
-                saved_message = f"Saved {len(session.points)} clicks in set {slot_index + 1}"
+                saved_message = (
+                    f"Saved {len(session.points)} clicks in {self._set_name(slot_index)}"
+                )
         finally:
             self._accepting_clicks = False
             try:
@@ -886,6 +1077,8 @@ class AutoClickerApp:
     def edit_point(self, index: int) -> None:
         if self._busy or self._closing:
             return
+        if self._renaming:
+            self.cancel_rename()
         slot = self.settings.slots[self.settings.active_slot]
         if index < 0 or index >= len(slot.points):
             return
@@ -924,6 +1117,82 @@ class AutoClickerApp:
                 if saved_message:
                     self._set_status(saved_message)
 
+    def add_point(self) -> None:
+        if self._busy or self._closing:
+            return
+        if self._renaming:
+            self.cancel_rename()
+        slot = self.settings.slots[self.settings.active_slot]
+        if len(slot.points) >= MAX_CLICKS:
+            self._set_status(f"A set can hold {MAX_CLICKS} clicks.")
+            return
+        self._busy = True
+        self._user_cancelled = False
+        if self.engine.is_running:
+            self.engine.stop()
+        self.refresh()
+        saved_message = None
+        index = len(slot.points) + 1
+        try:
+            while not self._closing and not self._user_cancelled:
+                point = self._capture_point(
+                    f"Click spot {index}",
+                    "Click the new place on your screen. Drag this window if it covers the spot. Esc cancels and keeps this set.",
+                )
+                if point is None:
+                    return
+                if self._confirm_point(f"Click {index}", point):
+                    slot.points = [*list(slot.points), point]
+                    self.persist()
+                    saved_message = f"Added click {index} to {self._set_name()}"
+                    return
+        finally:
+            self._accepting_clicks = False
+            try:
+                self.capture.disarm()
+            except Exception:
+                pass
+            self._destroy_dialog("_confirm_dialog")
+            self._leave_banner()
+            self._busy = False
+            if not self._closing:
+                self.refresh()
+                if saved_message:
+                    self._set_status(saved_message)
+
+    def start_rename(self) -> None:
+        if self._interactions_locked() or self._closing or self._renaming:
+            return
+        self._renaming = True
+        slot = self.settings.slots[self.settings.active_slot]
+        self.name_entry.delete(0, "end")
+        if slot.name:
+            self.name_entry.insert(0, slot.name)
+        self.slot_caption.pack_forget()
+        self.rename_button.frame.pack_forget()
+        self._rename_box.pack(fill="x")
+        try:
+            self.name_entry.focus_set()
+            self.name_entry.selection_range(0, "end")
+        except tk.TclError:
+            pass
+
+    def save_rename(self) -> None:
+        if not self._renaming or self._closing:
+            return
+        index = self.settings.active_slot
+        self.settings.slots[index].name = clean_name(self.name_entry.get())
+        self._renaming = False
+        self.persist()
+        self.refresh()
+        self._set_status(f"{self._set_name(index)} is in use.")
+
+    def cancel_rename(self) -> None:
+        if not self._renaming:
+            return
+        self._renaming = False
+        self.refresh()
+
     def cancel_setup(self) -> None:
         if self._closing or not self._busy:
             return
@@ -936,7 +1205,7 @@ class AutoClickerApp:
     def ask_count(self, slot_index: int, existing: int) -> int | None:
         """Ask inside the main window so the prompt is not a second overlapping card."""
 
-        self._count_choice = existing if 1 <= existing <= 5 else 1
+        self._count_choice = existing if 1 <= existing <= MAX_CLICKS else 1
         self._count_result = None
         self._count_waiting = True
         panel = tk.Frame(self._shell, bg=BG)
@@ -945,7 +1214,7 @@ class AutoClickerApp:
         inner.pack(fill="both", expand=True, padx=18, pady=(8, 18))
         tk.Label(
             inner,
-            text=f"Set {slot_index + 1}",
+            text=self._set_name(slot_index),
             bg=BG,
             fg=ACCENT,
             font=(self.font, 10, "bold"),
@@ -961,42 +1230,91 @@ class AutoClickerApp:
         ).pack(fill="x", pady=(4, 4))
         tk.Label(
             inner,
-            text="Pick up to 5. They run in order, then start again at the first.",
+            text=f"Pick up to {MAX_CLICKS}. They run in order, then start again at the first.",
             bg=BG,
             fg=MUTED,
             font=(self.font, 10),
-            wraplength=340,
+            wraplength=360,
             justify="left",
             anchor="w",
         ).pack(fill="x")
         if existing:
             tk.Label(
                 inner,
-                text="Finishing this replaces the clicks already in this set.",
+                text="Saved spots stay. A higher number only asks for the new ones. A lower number keeps the first spots. Cancel leaves this set unchanged.",
                 bg=BG,
                 fg=MUTED,
                 font=(self.font, 10),
-                wraplength=340,
+                wraplength=360,
                 justify="left",
                 anchor="w",
             ).pack(fill="x", pady=(4, 0))
-        row = tk.Frame(inner, bg=BG)
-        row.pack(fill="x", pady=(14, 16))
+        grid_host = tk.Frame(inner, bg=BG)
+        grid_host.pack(fill="x", pady=(14, 16))
+        grid_canvas = tk.Canvas(grid_host, bg=BG, highlightthickness=0, bd=0, height=1)
+        grid_scroll = tk.Scrollbar(
+            grid_host,
+            orient="vertical",
+            command=grid_canvas.yview,
+            bg=SURFACE_2,
+            troughcolor=SURFACE,
+            activebackground=ACCENT,
+            highlightthickness=0,
+            bd=0,
+            width=10,
+        )
+        grid_canvas.configure(yscrollcommand=grid_scroll.set)
+        grid_canvas.pack(side="left", fill="both", expand=True)
+        row = tk.Frame(grid_canvas, bg=BG)
+        grid_window = grid_canvas.create_window((0, 0), window=row, anchor="nw")
         self.count_buttons = []
-        for number in range(1, 6):
-            row.grid_columnconfigure(number - 1, weight=1, uniform="count")
+        columns = 6
+        for column in range(columns):
+            row.grid_columnconfigure(column, weight=1, uniform="count")
+        for number in range(1, MAX_CLICKS + 1):
             button = FlatButton(
                 row,
                 str(number),
                 lambda n=number: self._choose_count(n),
-                (self.font, 13, "bold"),
+                (self.font, 10, "bold"),
                 SURFACE,
                 TEXT,
                 SURFACE_2,
-                pady=8,
+                pady=4,
             )
-            button.grid(row=0, column=number - 1, sticky="ew", padx=3)
+            button.grid(
+                row=(number - 1) // columns,
+                column=(number - 1) % columns,
+                sticky="ew",
+                padx=2,
+                pady=2,
+            )
             self.count_buttons.append(button)
+        row.update_idletasks()
+        needed = max(1, row.winfo_reqheight())
+        visible = min(needed, 220)
+        grid_canvas.configure(height=visible, scrollregion=(0, 0, 0, needed))
+        if needed > 220:
+            grid_scroll.pack(side="right", fill="y")
+
+        def sync_count_grid(event, canvas=grid_canvas, window_id=grid_window):
+            if event.width > 1:
+                canvas.itemconfigure(window_id, width=event.width)
+
+        def scroll_count_grid(event, canvas=grid_canvas, tall=needed > 220):
+            if not tall:
+                return "break"
+            if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0:
+                canvas.yview_scroll(-1, "units")
+            else:
+                canvas.yview_scroll(1, "units")
+            return "break"
+
+        grid_canvas.bind("<Configure>", sync_count_grid)
+        for widget in (grid_canvas, row):
+            widget.bind("<Button-4>", scroll_count_grid)
+            widget.bind("<Button-5>", scroll_count_grid)
+            widget.bind("<MouseWheel>", scroll_count_grid)
         self._paint_count_choices()
         actions = tk.Frame(inner, bg=BG)
         actions.pack(fill="x")
@@ -1079,18 +1397,18 @@ class AutoClickerApp:
         self._body.pack_forget()
         panel.pack(fill="both", expand=True)
         self.root.update_idletasks()
-        width = 400
+        width = MAIN_WIDTH
         height = self._shell.winfo_reqheight() + 2
         self.root.geometry(f"{width}x{height}+{self.root.winfo_x()}+{self.root.winfo_y()}")
 
     def _bind_count_keys(self) -> None:
         self.root.bind("<Escape>", lambda _event: self._cancel_count())
         self.root.bind("<Return>", lambda _event: self._accept_count())
-        for number in range(1, 6):
+        for number in range(1, 10):
             self.root.bind(str(number), lambda _event, n=number: self._choose_count(n))
 
     def _unbind_count_keys(self) -> None:
-        for sequence in ("<Escape>", "<Return>", "1", "2", "3", "4", "5"):
+        for sequence in ("<Escape>", "<Return>", "1", "2", "3", "4", "5", "6", "7", "8", "9"):
             try:
                 self.root.unbind(sequence)
             except tk.TclError:
@@ -1453,6 +1771,13 @@ class AutoClickerApp:
     def close(self) -> None:
         if self._closing:
             return
+        if self._renaming:
+            try:
+                index = self.settings.active_slot
+                self.settings.slots[index].name = clean_name(self.name_entry.get())
+            except tk.TclError:
+                pass
+            self._renaming = False
         self._closing = True
         self._setup_cancelled = True
         self._accepting_clicks = False

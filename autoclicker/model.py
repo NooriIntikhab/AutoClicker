@@ -7,13 +7,15 @@ import re
 from dataclasses import dataclass, field
 
 SLOT_COUNT = 5
-MAX_CLICKS = 5
+MAX_CLICKS = 30
+MAX_NAME_LENGTH = 32
 MIN_INTERVAL = 0.05
 MAX_INTERVAL = 2.0
 DEFAULT_INTERVAL = 0.25
 DEFAULT_HOTKEY = "<f6>"
+# Ctrl+S+T always stops clicking and cannot be the play/pause key.
+EMERGENCY_STOP_SPEC = "<ctrl>+s+t"
 
-_HOTKEY_RE = re.compile(r"^[a-z0-9]$|^<[a-z0-9_]+>$")
 _MODIFIER_NAMES = frozenset(
     {
         "alt",
@@ -31,6 +33,34 @@ _MODIFIER_NAMES = frozenset(
         "cmd_r",
     }
 )
+_MODIFIER_CANON = {
+    "<ctrl>": "ctrl",
+    "<ctrl_l>": "ctrl",
+    "<ctrl_r>": "ctrl",
+    "<alt>": "alt",
+    "<alt_l>": "alt",
+    "<alt_r>": "alt",
+    "<alt_gr>": "alt",
+    "<shift>": "shift",
+    "<shift_l>": "shift",
+    "<shift_r>": "shift",
+}
+_MODIFIER_ORDER = ("ctrl", "alt", "shift")
+_MODIFIER_LABELS = {
+    "ctrl": "Ctrl",
+    "ctrl_l": "Ctrl",
+    "ctrl_r": "Ctrl",
+    "alt": "Alt",
+    "alt_l": "Alt",
+    "alt_r": "Alt",
+    "alt_gr": "Alt",
+    "shift": "Shift",
+    "shift_l": "Shift",
+    "shift_r": "Shift",
+    "cmd": "Cmd",
+    "cmd_l": "Cmd",
+    "cmd_r": "Cmd",
+}
 
 
 @dataclass(frozen=True)
@@ -42,6 +72,13 @@ class ClickPoint:
 @dataclass
 class ClickSet:
     points: list[ClickPoint] = field(default_factory=list)
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        self.name = clean_name(self.name)
+        self.points = [
+            point for point in list(self.points) if isinstance(point, ClickPoint)
+        ][:MAX_CLICKS]
 
 
 def default_slots() -> list[ClickSet]:
@@ -97,25 +134,64 @@ def format_speed(seconds: float) -> str:
     return f"{text} {noun}/sec"
 
 
+def clean_name(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:MAX_NAME_LENGTH]
+
+
+def display_set_name(name: object, index: int) -> str:
+    cleaned = clean_name(name)
+    if cleaned:
+        return cleaned
+    try:
+        number = int(index) + 1  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        number = 1
+    if isinstance(index, bool) or number < 1 or number > SLOT_COUNT:
+        number = 1
+    return f"Set {number}"
+
+
 def format_hotkey(spec: str) -> str:
     if not isinstance(spec, str) or not spec:
         return "F6"
-    if spec.startswith("<") and spec.endswith(">") and len(spec) > 2:
-        name = spec[1:-1].replace("_", " ")
-        if len(name) >= 2 and name[0] == "f" and name[1:].isdigit():
-            return "F" + name[1:]
-        return name.title()
-    if len(spec) == 1:
-        return spec.upper()
-    return spec
+    parts = [part for part in spec.split("+") if part]
+    if not parts:
+        return "F6"
+    return " + ".join(_format_hotkey_part(part) for part in parts)
 
 
 def is_valid_hotkey(spec: object) -> bool:
-    if not isinstance(spec, str) or not _HOTKEY_RE.fullmatch(spec):
+    return canonical_hotkey(spec) is not None
+
+
+def canonical_hotkey(spec: object) -> str | None:
+    """Return the stored play/pause spec, or None when it cannot be used."""
+
+    parsed = _parts_of_hotkey(spec)
+    if parsed is None:
+        return None
+    modifiers, keys = parsed
+    if set(modifiers) == {"ctrl"} and set(keys) == {"s", "t"}:
+        return None
+    if len(keys) != 1 or len(modifiers) != len(set(modifiers)):
+        return None
+    key = keys[0]
+    if not modifiers:
+        return key
+    ordered = [name for name in _MODIFIER_ORDER if name in modifiers]
+    return "+".join(f"<{name}>" for name in ordered) + "+" + key
+
+
+def is_emergency_chord(spec: object) -> bool:
+    """True for Ctrl+S+T in either letter order, including left or right Ctrl."""
+
+    parsed = _parts_of_hotkey(spec)
+    if parsed is None:
         return False
-    if spec.startswith("<") and spec[1:-1] in _MODIFIER_NAMES:
-        return False
-    return True
+    modifiers, keys = parsed
+    return set(modifiers) == {"ctrl"} and set(keys) == {"s", "t"} and len(keys) == 2
 
 
 def order_text(count: int) -> str:
@@ -123,6 +199,8 @@ def order_text(count: int) -> str:
         return "No clicks in this set yet"
     if count == 1:
         return "Click 1 repeats until you pause"
+    if count > 8:
+        return f"1 → 2 → 3 → … → {count}, then it repeats"
     sequence = " → ".join(str(index) for index in range(1, count + 1))
     return f"{sequence}, then it repeats"
 
@@ -147,8 +225,7 @@ class Settings:
     def __post_init__(self) -> None:
         self.active_slot = _clamp_slot(self.active_slot)
         self.interval = clamp_interval(self.interval)
-        if not is_valid_hotkey(self.hotkey):
-            self.hotkey = DEFAULT_HOTKEY
+        self.hotkey = canonical_hotkey(self.hotkey) or DEFAULT_HOTKEY
         self.slots = _fit_slots(self.slots)
 
     def active_points(self) -> list[ClickPoint]:
@@ -158,10 +235,17 @@ class Settings:
         return {
             "version": 1,
             "active_slot": self.active_slot,
-            "hotkey": self.hotkey,
+            "hotkey": canonical_hotkey(self.hotkey) or DEFAULT_HOTKEY,
             "interval": self.interval,
             "slots": [
-                {"points": [{"x": point.x, "y": point.y} for point in slot.points]}
+                {
+                    "name": clean_name(slot.name),
+                    "points": [
+                        {"x": point.x, "y": point.y}
+                        for point in list(slot.points)[:MAX_CLICKS]
+                        if isinstance(point, ClickPoint)
+                    ],
+                }
                 for slot in self.slots
             ],
         }
@@ -174,26 +258,31 @@ def settings_from_dict(data: object) -> Settings:
     parsed_slots = default_slots()
     if isinstance(slots, list):
         for index, slot in enumerate(slots[:SLOT_COUNT]):
-            parsed_slots[index] = ClickSet(points=_parse_points(slot))
+            parsed_slots[index] = _parse_slot(slot)
     hotkey = data.get("hotkey", DEFAULT_HOTKEY)
-    if not is_valid_hotkey(hotkey):
-        hotkey = DEFAULT_HOTKEY
     return Settings(
         active_slot=_clamp_slot(data.get("active_slot", 0)),
-        hotkey=hotkey,
+        hotkey=hotkey if isinstance(hotkey, str) else DEFAULT_HOTKEY,
         interval=clamp_interval(data.get("interval", DEFAULT_INTERVAL)),
         slots=parsed_slots,
     )
 
 
 class SetupSession:
-    """One pass through "how many clicks" and a confirm for every spot."""
+    """Confirm each new spot. Spots already saved stay unless the count shrinks."""
 
-    def __init__(self, count: int) -> None:
+    def __init__(self, count: int, existing: list[ClickPoint] | None = None) -> None:
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_CLICKS:
-            raise ValueError("count must be from 1 to 5")
+            raise ValueError(f"count must be from 1 to {MAX_CLICKS}")
+        kept: list[ClickPoint] = []
+        if existing:
+            for point in existing:
+                if isinstance(point, ClickPoint):
+                    kept.append(point)
+                if len(kept) >= count:
+                    break
         self.count = count
-        self.points: list[ClickPoint] = []
+        self.points: list[ClickPoint] = kept
         self.pending: ClickPoint | None = None
 
     @property
@@ -236,6 +325,74 @@ def _fit_slots(slots: list[ClickSet]) -> list[ClickSet]:
     for slot in fitted:
         slot.points = list(slot.points[:MAX_CLICKS])
     return fitted
+
+
+def _format_hotkey_part(part: str) -> str:
+    if part.startswith("<") and part.endswith(">") and len(part) > 2:
+        name = part[1:-1]
+        if name in _MODIFIER_LABELS:
+            return _MODIFIER_LABELS[name]
+        if len(name) >= 2 and name[0] == "f" and name[1:].isdigit():
+            return "F" + name[1:]
+        return name.replace("_", " ").title()
+    if len(part) == 1:
+        return part.upper()
+    return part
+
+
+def _split_hotkey(spec: str) -> list[str] | None:
+    if not spec or spec != spec.strip() or "++" in spec:
+        return None
+    parts = spec.split("+") if "+" in spec else [spec]
+    if any(not part for part in parts):
+        return None
+    return parts
+
+
+def _normalize_key(part: str) -> str | None:
+    if len(part) == 1:
+        if part.isalpha():
+            if not part.isascii():
+                return None
+            return part.lower()
+        if part.isascii() and part.isprintable() and ord(part) > 32 and part != "+":
+            return part
+        return None
+    if len(part) > 2 and part[0] == "<" and part[-1] == ">":
+        name = part[1:-1]
+        if not re.fullmatch(r"[a-z0-9_]+", name):
+            return None
+        if name in _MODIFIER_NAMES:
+            return None
+        return f"<{name}>"
+    return None
+
+
+def _parts_of_hotkey(spec: object) -> tuple[list[str], list[str]] | None:
+    if not isinstance(spec, str):
+        return None
+    parts = _split_hotkey(spec)
+    if parts is None:
+        return None
+    modifiers: list[str] = []
+    keys: list[str] = []
+    for part in parts:
+        canon = _MODIFIER_CANON.get(part)
+        if canon:
+            modifiers.append(canon)
+            continue
+        key = _normalize_key(part)
+        if key is None:
+            return None
+        keys.append(key)
+    return modifiers, keys
+
+
+def _parse_slot(slot: object) -> ClickSet:
+    if not isinstance(slot, dict):
+        return ClickSet()
+    name = slot.get("name", "")
+    return ClickSet(points=_parse_points(slot), name=name if isinstance(name, str) else "")
 
 
 def _parse_points(slot: object) -> list[ClickPoint]:

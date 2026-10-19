@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+from autoclicker.model import EMERGENCY_STOP_SPEC
+
 _MODIFIER_NAMES = frozenset(
     {
         "alt",
@@ -36,6 +38,54 @@ def key_to_spec(key) -> str | None:
         if len(char) == 1 and char.isprintable() and ord(char) >= 32:
             return char.lower()
     return None
+
+
+def modifier_name(key) -> str | None:
+    name = getattr(key, "name", None)
+    if name in ("ctrl", "ctrl_l", "ctrl_r"):
+        return "ctrl"
+    if name in ("alt", "alt_l", "alt_r", "alt_gr"):
+        return "alt"
+    if name in ("shift", "shift_l", "shift_r"):
+        return "shift"
+    return None
+
+
+def _control_letter(key) -> str | None:
+    char = getattr(key, "char", None)
+    if not isinstance(char, str) or len(char) != 1:
+        return None
+    code = ord(char)
+    if 1 <= code <= 26:
+        return chr(ord("a") + code - 1)
+    return None
+
+
+class HotkeyRecorder:
+    """Collect Ctrl, Alt, or Shift plus one key. A modifier alone keeps waiting."""
+
+    def __init__(self) -> None:
+        self._modifiers: set[str] = set()
+
+    def press(self, key) -> str | None:
+        modifier = modifier_name(key)
+        if modifier:
+            self._modifiers.add(modifier)
+            return None
+        spec = key_to_spec(key)
+        if spec is None and "ctrl" in self._modifiers:
+            spec = _control_letter(key)
+        if spec is None:
+            return None
+        if spec == "<esc>" or not self._modifiers:
+            return spec
+        ordered = [name for name in ("ctrl", "alt", "shift") if name in self._modifiers]
+        return "+".join(f"<{name}>" for name in ordered) + "+" + spec
+
+    def release(self, key) -> None:
+        modifier = modifier_name(key)
+        if modifier:
+            self._modifiers.discard(modifier)
 
 
 class PynputMouse:
@@ -82,25 +132,40 @@ class PynputHotkeys:
         self.cancel_capture()
         from pynput.keyboard import Listener
 
+        recorder = HotkeyRecorder()
+        done = False
+
         def on_press(key):
-            spec = key_to_spec(key)
+            nonlocal done
+            if done:
+                return False
+            try:
+                key = listener.canonical(key)
+            except Exception:
+                pass
+            spec = recorder.press(key)
             if spec is None:
                 return None
+            done = True
             on_result(None if spec == "<esc>" else spec)
             return False
 
-        self._capture = Listener(on_press=on_press)
-        self._capture.start()
+        def on_release(key):
+            try:
+                key = listener.canonical(key)
+            except Exception:
+                pass
+            recorder.release(key)
+
+        listener = Listener(on_press=on_press, on_release=on_release)
+        self._capture = listener
+        listener.start()
 
     def cancel_capture(self) -> None:
         capture = self._capture
         self._capture = None
         if capture is not None:
             capture.stop()
-
-
-# Fixed safety chord. Not stored in the rebindable play/pause hotkey.
-EMERGENCY_STOP_SPEC = "<ctrl>+s+t"
 
 
 class PynputEmergencyStop:
