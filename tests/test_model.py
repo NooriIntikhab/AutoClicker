@@ -1,7 +1,6 @@
 import pytest
 
 from autoclicker.model import (
-    MAX_CLICKS,
     MAX_INTERVAL,
     MIN_INTERVAL,
     ClickPoint,
@@ -16,6 +15,7 @@ from autoclicker.model import (
     is_stop_key,
     is_valid_hotkey,
     order_text,
+    parse_click_count,
     settings_from_dict,
     slider_from_gap,
 )
@@ -99,7 +99,7 @@ def test_setup_session_confirms_each_spot_before_saving_it():
     ]
 
 
-def test_setup_session_keeps_saved_spots_and_allows_thirty():
+def test_setup_session_keeps_saved_spots_and_allows_any_count():
     existing = [ClickPoint(1, 1), ClickPoint(2, 2)]
     session = SetupSession(4, existing)
     assert session.index == 3
@@ -115,11 +115,31 @@ def test_setup_session_keeps_saved_spots_and_allows_thirty():
     assert smaller.done
     assert smaller.points == [ClickPoint(1, 1)]
 
-    assert SetupSession(MAX_CLICKS).count == MAX_CLICKS
+    assert SetupSession(30).count == 30
+    assert SetupSession(31).count == 31
+    wide = SetupSession(40, [ClickPoint(i, i) for i in range(10)])
+    assert wide.index == 11
+    assert not wide.done
     with pytest.raises(ValueError):
         SetupSession(0)
     with pytest.raises(ValueError):
-        SetupSession(MAX_CLICKS + 1)
+        SetupSession(-3)
+    with pytest.raises(ValueError):
+        SetupSession(True)
+
+
+def test_parse_click_count_accepts_any_whole_number_of_at_least_one():
+    assert parse_click_count(1) == 1
+    assert parse_click_count(30) == 30
+    assert parse_click_count(31) == 31
+    assert parse_click_count(" 40 ") == 40
+    assert parse_click_count("0") is None
+    assert parse_click_count("-1") is None
+    assert parse_click_count("1.5") is None
+    assert parse_click_count("") is None
+    assert parse_click_count("abc") is None
+    assert parse_click_count(True) is None
+    assert parse_click_count(1.0) is None
 
 
 def test_settings_repair_bad_values():
@@ -205,7 +225,7 @@ def test_old_settings_without_names_still_load():
     ]
 
 
-def test_too_many_points_and_f8_are_repaired():
+def test_long_sets_keep_every_spot_and_f8_is_repaired():
     settings = settings_from_dict(
         {
             "hotkey": "<f8>",
@@ -219,10 +239,12 @@ def test_too_many_points_and_f8_are_repaired():
     )
     assert settings.hotkey == "<f6>"
     assert settings.slots[0].name == "Big"
-    assert len(settings.slots[0].points) == MAX_CLICKS
+    assert len(settings.slots[0].points) == 40
     assert settings.slots[0].points[0] == ClickPoint(0, 0, enabled=True)
     assert settings.slots[0].points[1] == ClickPoint(1, 1, enabled=False)
-    assert settings.slots[0].points[-1] == ClickPoint(29, 29, enabled=False)
+    assert settings.slots[0].points[-1] == ClickPoint(39, 39, enabled=False)
+    restored = settings_from_dict(settings.to_dict())
+    assert restored.slots[0].points == settings.slots[0].points
     assert settings_from_dict({"hotkey": "<alt>+b"}).hotkey == "<alt>+b"
     assert settings_from_dict({"hotkey": "<ctrl>+s+t"}).hotkey == "<f6>"
 

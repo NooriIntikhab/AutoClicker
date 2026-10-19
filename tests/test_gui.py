@@ -124,13 +124,18 @@ def app(tmp_path):
     window.close()
 
 
+def _fill_count(window, count: int) -> None:
+    window.count_entry.delete(0, "end")
+    window.count_entry.insert(0, str(count))
+
+
 def _drive_setup(window, points):
     state = {"phase": "select", "index": 0}
 
     def pump():
         phase = state["phase"]
-        if phase == "select" and window.count_buttons:
-            window.count_buttons[len(points) - 1].invoke()
+        if phase == "select" and window.count_entry is not None:
+            _fill_count(window, len(points))
             state["phase"] = "next"
             window.root.after(20, pump)
             return
@@ -198,9 +203,9 @@ def test_pick_again_does_not_keep_the_rejected_spot(app):
     state = {"tries": 0}
 
     def pump():
-        if app.count_buttons and state["tries"] == 0:
+        if app.count_entry is not None and state["tries"] == 0:
             state["tries"] = 1
-            app.count_buttons[0].invoke()
+            _fill_count(app, 1)
             app.root.after(20, pump)
             return
         if state["tries"] == 1 and app.count_next is not None:
@@ -242,7 +247,7 @@ def test_cancel_keeps_the_old_set(app):
     app.refresh()
 
     def pump():
-        if app.count_buttons:
+        if app.count_entry is not None:
             app._cancel_count()
             return
         app.root.after(20, pump)
@@ -632,6 +637,36 @@ def test_add_click_keeps_the_spots_already_saved(app):
     assert app.load().slots[0].points == app.settings.active_points()
 
 
+def test_add_click_appends_one_spot_past_thirty(app):
+    from autoclicker.model import ClickPoint
+
+    saved = [ClickPoint(i, i + 1) for i in range(30)]
+    app.settings.slots[0].points = list(saved)
+    app.refresh()
+    assert app.add_button.text() == "Add click"
+    assert app.add_button.enabled
+
+    def pump():
+        if app.capture.armed and app._banner_title.cget("text").startswith("Click spot"):
+            assert app._banner_title.cget("text") == "Click spot 31"
+            app.root.after(20, accept_later)
+            app.capture.emit(50, 60)
+            return
+        app.root.after(20, pump)
+
+    def accept_later():
+        if app.confirm_accept is not None:
+            app.confirm_accept.invoke()
+            return
+        app.root.after(20, accept_later)
+
+    app.root.after(20, pump)
+    app.root.after(4000, app.cancel_setup)
+    app.add_button.invoke()
+    assert app.settings.active_points() == saved + [ClickPoint(50, 60, enabled=True)]
+    assert app.load().slots[0].points == app.settings.active_points()
+
+
 def test_cancel_add_or_edit_keeps_the_saved_set(app):
     from autoclicker.model import ClickPoint
 
@@ -668,9 +703,10 @@ def test_higher_count_asks_only_for_the_new_spots(app):
 
     def pump():
         phase = state["phase"]
-        if phase == "select" and app.count_buttons:
-            assert len(app.count_buttons) == 30
-            app.count_buttons[3].invoke()
+        if phase == "select" and app.count_entry is not None:
+            assert "1 or more" in app.count_detail.cget("text")
+            assert "30" not in app.count_detail.cget("text")
+            _fill_count(app, 4)
             state["phase"] = "next"
             app.root.after(20, pump)
             return
@@ -717,8 +753,8 @@ def test_cancel_while_adding_spots_keeps_the_saved_set(app):
 
     def pump():
         phase = state["phase"]
-        if phase == "select" and app.count_buttons:
-            app.count_buttons[3].invoke()
+        if phase == "select" and app.count_entry is not None:
+            _fill_count(app, 4)
             state["phase"] = "next"
             app.root.after(20, pump)
             return
@@ -738,19 +774,92 @@ def test_cancel_while_adding_spots_keeps_the_saved_set(app):
     assert app.settings.active_points() == [ClickPoint(1, 1), ClickPoint(2, 2)]
 
 
+def test_change_how_many_accepts_a_count_past_thirty(app):
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(1, 1), ClickPoint(2, 2)]
+    app.refresh()
+    state = {"phase": "select"}
+
+    def pump():
+        phase = state["phase"]
+        if phase == "select" and app.count_entry is not None:
+            _fill_count(app, 31)
+            state["phase"] = "next"
+            app.root.after(20, pump)
+            return
+        if phase == "next" and app.count_next is not None:
+            state["phase"] = "click"
+            app.root.after(20, pump)
+            app.count_next.invoke()
+            return
+        if phase == "click" and app.capture.armed:
+            assert app._banner_title.cget("text") == "Click spot 3 of 31"
+            app.cancel_setup()
+            return
+        app.root.after(20, pump)
+
+    app.root.after(20, pump)
+    app.root.after(4000, app.cancel_setup)
+    app.run_setup()
+    assert app.settings.active_points() == [ClickPoint(1, 1), ClickPoint(2, 2)]
+
+
+def test_change_how_many_rejects_a_count_below_one(app):
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(1, 1)]
+    app.refresh()
+    state = {"phase": "zero"}
+
+    def pump():
+        if app.count_entry is None:
+            app.root.after(20, pump)
+            return
+        phase = state["phase"]
+        if phase == "zero":
+            _fill_count(app, 0)
+            state["phase"] = "checked-zero"
+            app.root.after(20, pump)
+            app.count_next.invoke()
+            return
+        if phase == "checked-zero":
+            assert app._count_waiting
+            assert "1 or more" in app.count_hint.cget("text")
+            app.count_entry.delete(0, "end")
+            state["phase"] = "checked-blank"
+            app.root.after(20, pump)
+            app.count_next.invoke()
+            return
+        if phase == "checked-blank":
+            assert app._count_waiting
+            assert "1 or more" in app.count_hint.cget("text")
+            app._cancel_count()
+            return
+        app.root.after(20, pump)
+
+    app.root.after(20, pump)
+    app.root.after(4000, app.cancel_setup)
+    app.run_setup()
+    assert app.settings.active_points() == [ClickPoint(1, 1)]
+
+
 def test_many_spots_scroll_inside_a_bounded_window(app):
-    from autoclicker.model import MAX_CLICKS, ClickPoint
+    from autoclicker.model import ClickPoint
     from autoclicker.ui import MAX_POINT_LIST_HEIGHT
 
     app.settings.slots[0].points = [ClickPoint(i, 1) for i in range(6)]
     app.refresh()
     app.root.update()
     short = app.root.winfo_height()
-    app.settings.slots[0].points = [ClickPoint(i, 1) for i in range(MAX_CLICKS)]
+    app.settings.slots[0].points = [ClickPoint(i, 1) for i in range(40)]
     app.refresh()
     app.root.update()
     tall = app.root.winfo_height()
-    assert len(app.edit_buttons) == MAX_CLICKS
+    assert len(app.edit_buttons) == 40
+    assert len(app.power_buttons) == 40
+    assert app.add_button.text() == "Add click"
+    assert app.add_button.enabled
     assert app.points_canvas.winfo_height() <= MAX_POINT_LIST_HEIGHT
     assert app.points_scrollbar.winfo_manager() == "pack"
     assert tall < 900
