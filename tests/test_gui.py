@@ -58,7 +58,7 @@ class FakeHotkeys:
 
 class FakeEmergency:
     def __init__(self):
-        self.spec = "<ctrl>+s+t"
+        self.spec = "<f8>"
         self.callback = None
         self.started = False
         self.stopped = False
@@ -252,6 +252,113 @@ def test_cancel_keeps_the_old_set(app):
     assert app.settings.active_points() == [ClickPoint(1, 1)]
 
 
+def test_each_spot_can_be_turned_off_while_clicking(app):
+    import time
+
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [ClickPoint(1, 1), ClickPoint(2, 2)]
+    app.settings.slots[1].points = [ClickPoint(9, 9)]
+    app.settings.interval = 0.05
+    app.refresh()
+    assert [button.text() for button in app.power_buttons] == ["On", "On"]
+    # Window updates from the click thread can stall outside the real main loop.
+    app.engine._on_event = lambda *_args, **_kwargs: None
+
+    app._last_toggle = 0
+    app.toggle_play()
+    deadline = time.time() + 2
+    while not app.mouse_log.clicks and time.time() < deadline:
+        time.sleep(0.02)
+    assert app.engine.is_running
+
+    app.power_buttons[0].invoke()
+    app.root.update()
+    assert app.engine.is_running
+    assert app.power_buttons[0].text() == "Off"
+    assert app.settings.active_points()[0].enabled is False
+    assert app.load().slots[0].points[0].enabled is False
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        if app.mouse_log.clicks and app.mouse_log.clicks[-1] == (2, 2):
+            break
+        time.sleep(0.02)
+    start = len(app.mouse_log.clicks)
+    deadline = time.time() + 2
+    while len(app.mouse_log.clicks) < start + 3 and time.time() < deadline:
+        time.sleep(0.02)
+    assert app.mouse_log.clicks[start : start + 3] == [(2, 2), (2, 2), (2, 2)]
+    assert app.engine.is_running
+
+    app.power_buttons[0].invoke()
+    app.root.update()
+    assert app.power_buttons[0].text() == "On"
+    assert app.engine.is_running
+    mark = len(app.mouse_log.clicks)
+    deadline = time.time() + 2
+    while (1, 1) not in app.mouse_log.clicks[mark:] and time.time() < deadline:
+        time.sleep(0.02)
+    assert (1, 1) in app.mouse_log.clicks[mark:]
+    assert app.engine.is_running
+
+    app.power_buttons[0].invoke()
+    app.power_buttons[1].invoke()
+    app.root.update()
+    deadline = time.time() + 2
+    while app.engine.is_running and time.time() < deadline:
+        time.sleep(0.02)
+    assert not app.engine.is_running
+    app._last_toggle = 0
+    app._block_start_until = 0
+    app.play_button.invoke()
+    app.root.update()
+    assert app.status_label.cget("text") == "Nothing in this set is turned on."
+    assert not app.engine.is_running
+    assert app.mouse_log.clicks[-1] != (9, 9)
+
+    app.on_slot_clicked(1)
+    assert app.power_buttons[0].text() == "On"
+    app.power_buttons[0].invoke()
+    assert app.settings.slots[1].points[0].enabled is False
+    assert app.settings.slots[0].points[0].enabled is False
+    assert app.settings.slots[0].points[1].enabled is False
+    assert app.load().slots[1].points[0].enabled is False
+
+
+def test_editing_a_spot_keeps_whether_it_is_on(app):
+    from autoclicker.model import ClickPoint
+
+    app.settings.slots[0].points = [
+        ClickPoint(1, 1, enabled=False),
+        ClickPoint(2, 2, enabled=True),
+    ]
+    app.refresh()
+    assert app.power_buttons[0].text() == "Off"
+
+    def pump():
+        if app.capture.armed and app._banner_title.cget("text").startswith("New spot"):
+            app.root.after(20, accept_later)
+            app.capture.emit(50, 60)
+            return
+        app.root.after(20, pump)
+
+    def accept_later():
+        if app.confirm_accept is not None:
+            app.confirm_accept.invoke()
+            return
+        app.root.after(20, accept_later)
+
+    app.root.after(20, pump)
+    app.root.after(4000, app.cancel_setup)
+    app.edit_point(0)
+    assert app.settings.active_points() == [
+        ClickPoint(50, 60, enabled=False),
+        ClickPoint(2, 2, enabled=True),
+    ]
+    assert app.power_buttons[0].text() == "Off"
+    assert app.load().slots[0].points[0].enabled is False
+
+
 def test_edit_replaces_one_spot(app):
     from autoclicker.model import ClickPoint
 
@@ -357,9 +464,10 @@ def test_pointer_movement_does_not_stop_clicking(app):
     app.engine.stop()
 
 
-def test_window_shows_emergency_stop_and_keeps_the_play_key(app):
-    assert app.emergency_label.cget("text") == "Ctrl + S + T stops clicking"
-    assert app.emergency.spec == "<ctrl>+s+t"
+def test_window_shows_f8_stop_and_keeps_the_play_key(app):
+    assert app.emergency_label.cget("text") == "F8 stops clicking"
+    assert app.emergency.spec == "<f8>"
+    assert "ctrl" not in app.emergency.spec
     assert app.emergency.started
     assert app.settings.hotkey == "<f6>"
     assert app.hotkeys.spec == "<f6>"
@@ -368,11 +476,11 @@ def test_window_shows_emergency_stop_and_keeps_the_play_key(app):
     app.root.update()
     assert app.settings.hotkey == "s"
     assert app.hotkeys.spec == "s"
-    assert app.emergency.spec == "<ctrl>+s+t"
+    assert app.emergency.spec == "<f8>"
     assert app.emergency.callback == app._emergency_pressed
 
 
-def test_ctrl_s_t_pauses_and_does_not_start(app):
+def test_f8_pauses_and_does_not_start(app):
     import time
 
     from autoclicker.model import ClickPoint
@@ -409,7 +517,7 @@ def test_ctrl_s_t_pauses_and_does_not_start(app):
     assert app.play_button.text() == "Play"
 
 
-def test_chord_does_not_start_when_the_play_key_is_s(app):
+def test_f8_does_not_start_when_the_play_key_is_s(app):
     from autoclicker.model import ClickPoint
 
     app.settings.slots[0].points = [ClickPoint(1, 1)]
@@ -439,15 +547,15 @@ def test_play_key_can_be_a_chord_and_changed_again(app):
     assert app.settings.hotkey == "<shift>+<f8>"
     assert app.hotkey_value.cget("text") == "Shift + F8"
     assert app.load().hotkey == "<shift>+<f8>"
-    assert app.emergency.spec == "<ctrl>+s+t"
+    assert app.emergency.spec == "<f8>"
 
     app.hotkey_button.invoke()
-    app.hotkeys.emit_key("<ctrl>+s+t")
+    app.hotkeys.emit_key("<f8>")
     app.root.update()
     assert app.settings.hotkey == "<shift>+<f8>"
     assert app.hotkeys.spec == "<shift>+<f8>"
     assert app.load().hotkey == "<shift>+<f8>"
-    assert "stop" in app.status_label.cget("text").lower()
+    assert "f8" in app.status_label.cget("text").lower()
 
 
 def test_sets_can_be_named_and_renamed(app):

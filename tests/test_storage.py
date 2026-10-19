@@ -41,6 +41,28 @@ def test_missing_file_is_a_fresh_app(tmp_path):
     assert len(settings.slots) == 5
 
 
+def test_spot_toggles_round_trip_and_old_files_default_on(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "hotkey": "<f6>",
+                "slots": [{"points": [{"x": 1, "y": 2}, {"x": 3, "y": 4}]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_settings(path)
+    assert loaded.slots[0].points == [ClickPoint(1, 2, enabled=True), ClickPoint(3, 4, enabled=True)]
+    loaded.slots[0].points = [ClickPoint(1, 2, enabled=False), ClickPoint(3, 4, enabled=True)]
+    save_settings(loaded, path)
+    again = load_settings(path)
+    assert again.slots[0].points[0].enabled is False
+    assert again.slots[0].points[1].enabled is True
+    assert json.loads(path.read_text(encoding="utf-8"))["slots"][0]["points"][0]["on"] is False
+
+
 def test_old_settings_file_without_names_loads(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(

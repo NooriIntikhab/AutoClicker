@@ -21,7 +21,7 @@ from autoclicker.model import (
     format_hotkey,
     format_speed,
     gap_from_slider,
-    is_emergency_chord,
+    is_stop_key,
     order_text,
     slider_from_gap,
 )
@@ -271,6 +271,7 @@ class AutoClickerApp:
         self._count_choice = 1
         self._count_result: int | None = None
         self.edit_buttons: list[FlatButton] = []
+        self.power_buttons: list[FlatButton] = []
         self._icon_image = None
         self._build()
         self.apply_hotkey()
@@ -363,7 +364,7 @@ class AutoClickerApp:
 
         self.emergency_label = tk.Label(
             self._body,
-            text="Ctrl + S + T stops clicking",
+            text="F8 stops clicking",
             bg=BG,
             fg=MUTED,
             font=(self.font, 9),
@@ -743,6 +744,7 @@ class AutoClickerApp:
 
     def _rebuild_points(self, points: list[ClickPoint]) -> None:
         self.edit_buttons = []
+        self.power_buttons = []
         for child in self.points_inner.winfo_children():
             child.destroy()
         if not points:
@@ -771,11 +773,24 @@ class AutoClickerApp:
                 row,
                 text=f"{point.x}, {point.y}",
                 bg=SURFACE,
-                fg=TEXT,
+                fg=TEXT if point.enabled else MUTED,
                 font=(self.font, 10),
                 anchor="w",
             )
             coords.pack(side="left", fill="x", expand=True)
+            power = FlatButton(
+                row,
+                "On" if point.enabled else "Off",
+                lambda i=index: self.toggle_point(i),
+                (self.font, 10, "bold"),
+                GREEN if point.enabled else SURFACE_2,
+                TEXT if point.enabled else MUTED,
+                GREEN_HOVER if point.enabled else "#3a3d46",
+                pady=4,
+            )
+            power.label.configure(padx=8)
+            power.set_style(enabled=not locked)
+            self.power_buttons.append(power)
             edit = FlatButton(
                 row,
                 "Edit",
@@ -788,9 +803,10 @@ class AutoClickerApp:
             )
             edit.label.configure(padx=8)
             edit.set_style(enabled=not locked)
-            edit.pack(side="right", padx=6, pady=4)
+            edit.pack(side="right", padx=(0, 6), pady=4)
+            power.pack(side="right", padx=(0, 4), pady=4)
             self.edit_buttons.append(edit)
-            for widget in (row, number, coords, edit.frame, edit.label):
+            for widget in (row, number, coords, power.frame, power.label, edit.frame, edit.label):
                 self._bind_point_wheel(widget)
         self._bind_point_wheel(self.points_canvas)
         self._bind_point_wheel(self.points_inner)
@@ -838,7 +854,7 @@ class AutoClickerApp:
 
     def _sync_play_button(self) -> None:
         running = self.engine.is_running
-        has_points = bool(self.settings.active_points())
+        has_points = bool(self.settings.enabled_points())
         locked = self._interactions_locked()
         if running and not locked:
             text, bg, hover, fg = "Pause", AMBER, AMBER_HOVER, "#1a1b1e"
@@ -857,6 +873,11 @@ class AutoClickerApp:
 
     def _points_for_engine(self):
         return self.settings.active_points()
+
+    def _empty_status(self) -> str:
+        if self.settings.active_points():
+            return "Nothing in this set is turned on."
+        return "Set up clicks for this set first."
 
     def _interval_for_engine(self) -> float:
         return self.settings.interval
@@ -884,7 +905,7 @@ class AutoClickerApp:
                 f"Clicking {name} · spot {payload['index'] + 1} of {payload['count']}"
             )
         elif kind == "empty":
-            self._pending_status = "Set up clicks for this set first."
+            self._pending_status = self._empty_status()
         elif kind == "error":
             self._pending_status = payload.get("message") or "Could not click."
         elif kind == "stopped":
@@ -908,6 +929,10 @@ class AutoClickerApp:
             return
         if not self.settings.active_points():
             self._set_status("Set up clicks for this set first.")
+            self._sync_play_button()
+            return
+        if not self.settings.enabled_points():
+            self._set_status("Nothing in this set is turned on.")
             self._sync_play_button()
             return
         self.engine.start()
@@ -981,8 +1006,8 @@ class AutoClickerApp:
             self.persist()
         self.apply_hotkey()
         self.refresh()
-        if spec and is_emergency_chord(spec):
-            self._set_status("Ctrl + S + T always stops. Pick another key.")
+        if spec and is_stop_key(spec):
+            self._set_status("F8 always stops. Pick another key.")
         elif chosen is not None:
             self._set_status(f"Play / pause is now {format_hotkey(chosen)}.")
 
@@ -1015,13 +1040,12 @@ class AutoClickerApp:
         try:
             self.emergency.start(self._emergency_pressed)
         except Exception as exc:
-            print(f"AutoClicker could not listen for Ctrl+S+T: {exc}", file=sys.stderr)
+            print(f"AutoClicker could not listen for F8: {exc}", file=sys.stderr)
 
     def _emergency_pressed(self) -> None:
         if self._closing:
             return
-        # Hold off Play for a moment so a play key of S or T cannot start
-        # clicking from the same chord.
+        # Hold off Play so F8 cannot start a run from the same key moment.
         self._block_start_until = time.monotonic() + 0.35
         try:
             self.root.after(0, self.emergency_stop)
@@ -1029,7 +1053,7 @@ class AutoClickerApp:
             apply_emergency_stop(self.engine)
 
     def emergency_stop(self) -> None:
-        """Ctrl+S+T always pauses. It does not start clicking."""
+        """F8 always pauses. It does not start clicking."""
 
         if self._closing:
             return
@@ -1098,7 +1122,7 @@ class AutoClickerApp:
                     return
                 if self._confirm_point(f"Click {index + 1}", point):
                     points = list(slot.points)
-                    points[index] = point
+                    points[index] = ClickPoint(point.x, point.y, enabled=points[index].enabled)
                     slot.points = points
                     self.persist()
                     saved_message = f"Updated click {index + 1}"
@@ -1116,6 +1140,23 @@ class AutoClickerApp:
                 self.refresh()
                 if saved_message:
                     self._set_status(saved_message)
+
+    def toggle_point(self, index: int) -> None:
+        if self._closing or self._interactions_locked():
+            return
+        slot = self.settings.slots[self.settings.active_slot]
+        if index < 0 or index >= len(slot.points):
+            return
+        current = slot.points[index]
+        points = list(slot.points)
+        points[index] = ClickPoint(current.x, current.y, enabled=not current.enabled)
+        slot.points = points
+        self.persist()
+        running = self.engine.is_running
+        self.refresh()
+        if running:
+            state = "on" if points[index].enabled else "off"
+            self._set_status(f"Click {index + 1} is {state}.")
 
     def add_point(self) -> None:
         if self._busy or self._closing:

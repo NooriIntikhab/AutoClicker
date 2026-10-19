@@ -13,8 +13,8 @@ MIN_INTERVAL = 0.05
 MAX_INTERVAL = 2.0
 DEFAULT_INTERVAL = 0.25
 DEFAULT_HOTKEY = "<f6>"
-# Ctrl+S+T always stops clicking and cannot be the play/pause key.
-EMERGENCY_STOP_SPEC = "<ctrl>+s+t"
+# F8 always stops clicking and cannot be the play/pause key.
+EMERGENCY_STOP_SPEC = "<f8>"
 
 _MODIFIER_NAMES = frozenset(
     {
@@ -67,6 +67,7 @@ _MODIFIER_LABELS = {
 class ClickPoint:
     x: int
     y: int
+    enabled: bool = True
 
 
 @dataclass
@@ -173,25 +174,21 @@ def canonical_hotkey(spec: object) -> str | None:
     if parsed is None:
         return None
     modifiers, keys = parsed
-    if set(modifiers) == {"ctrl"} and set(keys) == {"s", "t"}:
-        return None
     if len(keys) != 1 or len(modifiers) != len(set(modifiers)):
         return None
     key = keys[0]
     if not modifiers:
+        if key == EMERGENCY_STOP_SPEC:
+            return None
         return key
     ordered = [name for name in _MODIFIER_ORDER if name in modifiers]
     return "+".join(f"<{name}>" for name in ordered) + "+" + key
 
 
-def is_emergency_chord(spec: object) -> bool:
-    """True for Ctrl+S+T in either letter order, including left or right Ctrl."""
+def is_stop_key(spec: object) -> bool:
+    """True only for the fixed F8 stop key."""
 
-    parsed = _parts_of_hotkey(spec)
-    if parsed is None:
-        return False
-    modifiers, keys = parsed
-    return set(modifiers) == {"ctrl"} and set(keys) == {"s", "t"} and len(keys) == 2
+    return _parts_of_hotkey(spec) == ([], [EMERGENCY_STOP_SPEC])
 
 
 def order_text(count: int) -> str:
@@ -231,6 +228,9 @@ class Settings:
     def active_points(self) -> list[ClickPoint]:
         return list(self.slots[self.active_slot].points)
 
+    def enabled_points(self) -> list[ClickPoint]:
+        return [point for point in self.active_points() if point.enabled]
+
     def to_dict(self) -> dict:
         return {
             "version": 1,
@@ -241,7 +241,7 @@ class Settings:
                 {
                     "name": clean_name(slot.name),
                     "points": [
-                        {"x": point.x, "y": point.y}
+                        {"x": point.x, "y": point.y, "on": bool(point.enabled)}
                         for point in list(slot.points)[:MAX_CLICKS]
                         if isinstance(point, ClickPoint)
                     ],
@@ -409,10 +409,16 @@ def _parse_points(slot: object) -> list[ClickPoint]:
         y = _parse_coord(raw.get("y"))
         if x is None or y is None:
             continue
-        points.append(ClickPoint(x, y))
+        points.append(ClickPoint(x, y, enabled=_parse_on(raw)))
         if len(points) == MAX_CLICKS:
             break
     return points
+
+
+def _parse_on(raw: dict) -> bool:
+    if "on" not in raw:
+        return True
+    return raw.get("on") is True
 
 
 def _parse_coord(value: object) -> int | None:

@@ -13,7 +13,7 @@ from autoclicker.model import (
     format_hotkey,
     format_speed,
     gap_from_slider,
-    is_emergency_chord,
+    is_stop_key,
     is_valid_hotkey,
     order_text,
     settings_from_dict,
@@ -46,7 +46,7 @@ def test_hotkey_labels_and_validation():
     assert format_hotkey("<alt>+<f8>") == "Alt + F8"
     assert format_hotkey("<shift>+<space>") == "Shift + Space"
     assert format_hotkey("<ctrl>+<shift>+x") == "Ctrl + Shift + X"
-    assert is_valid_hotkey("<f8>")
+    assert is_valid_hotkey("<f6>")
     assert is_valid_hotkey("b")
     assert is_valid_hotkey("<ctrl>+a")
     assert is_valid_hotkey("<alt>+<f4>")
@@ -62,12 +62,14 @@ def test_hotkey_labels_and_validation():
     assert not is_valid_hotkey("<ctrl>+s+t")
     assert not is_valid_hotkey("<ctrl>+t+s")
     assert not is_valid_hotkey("<ctrl_l>+s+t")
+    assert not is_valid_hotkey("<f8>")
     assert not is_valid_hotkey("<cmd>+a")
     assert not is_valid_hotkey("")
-    assert is_emergency_chord("<ctrl>+s+t")
-    assert is_emergency_chord("<ctrl>+t+s")
-    assert not is_emergency_chord("<ctrl>+s")
-    assert not is_emergency_chord("<f6>")
+    assert is_stop_key("<f8>")
+    assert not is_stop_key("<ctrl>+s+t")
+    assert not is_stop_key("<ctrl>+s")
+    assert not is_stop_key("<f6>")
+    assert not is_stop_key("<shift>+<f8>")
 
 
 def test_order_text():
@@ -185,13 +187,13 @@ def test_old_settings_without_names_still_load():
         {
             "version": 1,
             "active_slot": 1,
-            "hotkey": "<f8>",
+            "hotkey": "<f7>",
             "interval": 0.5,
             "slots": [{"points": [{"x": 3, "y": 4}]}],
         }
     )
     assert settings.active_slot == 1
-    assert settings.hotkey == "<f8>"
+    assert settings.hotkey == "<f7>"
     assert settings.slots[0].points == [ClickPoint(3, 4)]
     assert settings.slots[0].name == ""
     assert [display_set_name(slot.name, index) for index, slot in enumerate(settings.slots)] == [
@@ -203,14 +205,14 @@ def test_old_settings_without_names_still_load():
     ]
 
 
-def test_too_many_points_and_the_stop_chord_are_repaired():
+def test_too_many_points_and_f8_are_repaired():
     settings = settings_from_dict(
         {
-            "hotkey": "<ctrl>+s+t",
+            "hotkey": "<f8>",
             "slots": [
                 {
                     "name": "Big",
-                    "points": [{"x": i, "y": i} for i in range(40)],
+                    "points": [{"x": i, "y": i, "on": i % 2 == 0} for i in range(40)],
                 }
             ],
         }
@@ -218,5 +220,17 @@ def test_too_many_points_and_the_stop_chord_are_repaired():
     assert settings.hotkey == "<f6>"
     assert settings.slots[0].name == "Big"
     assert len(settings.slots[0].points) == MAX_CLICKS
-    assert settings.slots[0].points[-1] == ClickPoint(29, 29)
+    assert settings.slots[0].points[0] == ClickPoint(0, 0, enabled=True)
+    assert settings.slots[0].points[1] == ClickPoint(1, 1, enabled=False)
+    assert settings.slots[0].points[-1] == ClickPoint(29, 29, enabled=False)
     assert settings_from_dict({"hotkey": "<alt>+b"}).hotkey == "<alt>+b"
+    assert settings_from_dict({"hotkey": "<ctrl>+s+t"}).hotkey == "<f6>"
+
+
+def test_old_points_without_a_toggle_stay_on():
+    settings = settings_from_dict({"slots": [{"points": [{"x": 3, "y": 4}, {"x": 5, "y": 6, "on": False}]}]})
+    assert settings.slots[0].points == [
+        ClickPoint(3, 4, enabled=True),
+        ClickPoint(5, 6, enabled=False),
+    ]
+    assert settings.enabled_points() == [ClickPoint(3, 4, enabled=True)]

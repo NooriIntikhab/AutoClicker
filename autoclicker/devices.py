@@ -169,7 +169,7 @@ class PynputHotkeys:
 
 
 class PynputEmergencyStop:
-    """Global Ctrl+S+T listener. Always separate from the play/pause key."""
+    """Global F8 listener. Separate from the play/pause key. Ctrl, S, and T are not watched."""
 
     spec = EMERGENCY_STOP_SPEC
 
