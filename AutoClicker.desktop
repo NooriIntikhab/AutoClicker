@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=AutoClicker
+Comment=Click saved spots on your screen
+Exec=bash -c 'cd "$(dirname "$1")" && exec ./run.sh' bash %k
+Icon=assets/icon.png
+Terminal=false
+Categories=Utility;
+StartupNotify=true
