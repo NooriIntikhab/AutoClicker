@@ -6,14 +6,15 @@ from autoclicker.model import (
     ClickPoint,
     Settings,
     SetupSession,
+    DEFAULT_STOP_HOTKEY,
     canonical_hotkey,
     contains_point,
     display_set_name,
     format_hotkey,
     format_speed,
     gap_from_slider,
-    is_stop_key,
     is_valid_hotkey,
+    resolve_hotkeys,
     order_text,
     parse_click_count,
     settings_from_dict,
@@ -62,14 +63,15 @@ def test_hotkey_labels_and_validation():
     assert not is_valid_hotkey("<ctrl>+s+t")
     assert not is_valid_hotkey("<ctrl>+t+s")
     assert not is_valid_hotkey("<ctrl_l>+s+t")
-    assert not is_valid_hotkey("<f8>")
+    assert is_valid_hotkey("<f8>")
+    assert canonical_hotkey("<f8>") == "<f8>"
     assert not is_valid_hotkey("<cmd>+a")
     assert not is_valid_hotkey("")
-    assert is_stop_key("<f8>")
-    assert not is_stop_key("<ctrl>+s+t")
-    assert not is_stop_key("<ctrl>+s")
-    assert not is_stop_key("<f6>")
-    assert not is_stop_key("<shift>+<f8>")
+    assert DEFAULT_STOP_HOTKEY == "<f8>"
+    assert resolve_hotkeys("<f6>", "<f8>") == ("<f6>", "<f8>")
+    assert resolve_hotkeys("<f9>", "<ctrl>+<f8>") == ("<f9>", "<ctrl>+<f8>")
+    assert resolve_hotkeys("<f8>", "<f8>") == ("<f6>", "<f8>")
+    assert resolve_hotkeys("<f7>", "<f7>") == ("<f7>", "<f8>")
 
 
 def test_order_text():
@@ -183,6 +185,7 @@ def test_new_settings_have_five_empty_sets():
     assert len(settings.slots) == 5
     assert settings.active_points() == []
     assert settings.hotkey == "<f6>"
+    assert settings.stop_hotkey == "<f8>"
     assert [slot.name for slot in settings.slots] == ["", "", "", "", ""]
 
 
@@ -214,6 +217,7 @@ def test_old_settings_without_names_still_load():
     )
     assert settings.active_slot == 1
     assert settings.hotkey == "<f7>"
+    assert settings.stop_hotkey == "<f8>"
     assert settings.slots[0].points == [ClickPoint(3, 4)]
     assert settings.slots[0].name == ""
     assert [display_set_name(slot.name, index) for index, slot in enumerate(settings.slots)] == [
@@ -238,6 +242,7 @@ def test_long_sets_keep_every_spot_and_f8_is_repaired():
         }
     )
     assert settings.hotkey == "<f6>"
+    assert settings.stop_hotkey == "<f8>"
     assert settings.slots[0].name == "Big"
     assert len(settings.slots[0].points) == 40
     assert settings.slots[0].points[0] == ClickPoint(0, 0, enabled=True)
@@ -247,6 +252,14 @@ def test_long_sets_keep_every_spot_and_f8_is_repaired():
     assert restored.slots[0].points == settings.slots[0].points
     assert settings_from_dict({"hotkey": "<alt>+b"}).hotkey == "<alt>+b"
     assert settings_from_dict({"hotkey": "<ctrl>+s+t"}).hotkey == "<f6>"
+    assert settings_from_dict({"hotkey": "<ctrl>+s+t"}).stop_hotkey == "<f8>"
+    both = settings_from_dict({"hotkey": "<f7>", "stop_hotkey": "<ctrl>+b"})
+    assert both.hotkey == "<f7>"
+    assert both.stop_hotkey == "<ctrl>+b"
+    assert settings_from_dict({"hotkey": "<f8>", "stop_hotkey": "<f9>"}).hotkey == "<f8>"
+    same = settings_from_dict({"hotkey": "a", "stop_hotkey": "a"})
+    assert same.hotkey == "a"
+    assert same.stop_hotkey == "<f8>"
 
 
 def test_old_points_without_a_toggle_stay_on():

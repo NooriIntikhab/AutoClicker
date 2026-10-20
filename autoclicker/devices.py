@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import time
 
-from autoclicker.model import EMERGENCY_STOP_SPEC
+from autoclicker.model import DEFAULT_STOP_HOTKEY
+
+# Default only. The listener follows the saved stop key.
+EMERGENCY_STOP_SPEC = DEFAULT_STOP_HOTKEY
 
 _MODIFIER_NAMES = frozenset(
     {
@@ -169,12 +172,18 @@ class PynputHotkeys:
 
 
 class PynputEmergencyStop:
-    """Global F8 listener. Separate from the play/pause key. Ctrl, S, and T are not watched."""
+    """Global stop listener. Pressing the saved stop key only pauses.
 
-    spec = EMERGENCY_STOP_SPEC
+    Ctrl+S+T is not watched. The spec starts as F8 and changes when a new stop key is saved.
+    """
 
     def __init__(self) -> None:
+        self.spec = DEFAULT_STOP_HOTKEY
         self._listener = None
+
+    def set_hotkey(self, spec: str, callback) -> None:
+        self.spec = spec
+        self.start(callback)
 
     def start(self, callback) -> None:
         self.stop()

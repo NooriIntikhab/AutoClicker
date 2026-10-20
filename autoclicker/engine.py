@@ -1,4 +1,4 @@
-"""Repeat the active click list until pause, F8, or quit."""
+"""Repeat the active click list until pause, the stop key, or quit."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ class ClickEngine:
                     if not getattr(point, "enabled", True):
                         continue
                     # Pointer movement, a stopped pointer, and screen changes
-                    # do not pause this loop. stop() is pause, close, or F8.
+                    # do not pause this loop. stop() is pause, close, or the stop key.
                     try:
                         self._mouse.click(int(point.x), int(point.y))
                     except Exception as exc:
@@ -126,7 +126,7 @@ def _any_enabled(points: Sequence[object]) -> bool:
 
 
 def apply_emergency_stop(engine: ClickEngine) -> None:
-    """F8 pauses a run. It never starts clicking."""
+    """The stop key pauses a run. It never starts clicking."""
 
     engine.stop()
 
