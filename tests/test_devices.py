@@ -5,6 +5,16 @@ import pytest
 pytestmark = pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="pynput needs a display on Linux")
 
 
+def test_stop_listener_defaults_to_f8():
+    from autoclicker.devices import EMERGENCY_STOP_SPEC, PynputEmergencyStop
+
+    listener = PynputEmergencyStop()
+    assert EMERGENCY_STOP_SPEC == "<f8>"
+    assert listener.spec == "<f8>"
+    assert "ctrl" not in listener.spec
+    assert "s+t" not in listener.spec
+
+
 def test_key_to_spec_maps_letters_and_function_keys():
     from pynput.keyboard import Key, KeyCode
 

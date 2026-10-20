@@ -9,6 +9,7 @@ def test_round_trip(tmp_path):
     settings = load_settings(path)
     settings.active_slot = 2
     settings.hotkey = "<ctrl>+a"
+    settings.stop_hotkey = "<f9>"
     settings.interval = 0.5
     settings.slots[2].name = "Farm"
     settings.slots[2].points = [ClickPoint(i, i + 3) for i in range(12)]
@@ -17,6 +18,7 @@ def test_round_trip(tmp_path):
     loaded = load_settings(path)
     assert loaded.active_slot == 2
     assert loaded.hotkey == "<ctrl>+a"
+    assert loaded.stop_hotkey == "<f9>"
     assert loaded.interval == 0.5
     assert loaded.slots[2].name == "Farm"
     assert loaded.slots[2].points[0] == ClickPoint(0, 3)
@@ -24,6 +26,8 @@ def test_round_trip(tmp_path):
     assert len(loaded.slots[2].points) == 14
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["version"] == 1
+    assert payload["hotkey"] == "<ctrl>+a"
+    assert payload["stop_hotkey"] == "<f9>"
     assert payload["slots"][2]["name"] == "Farm"
 
 
@@ -61,6 +65,31 @@ def test_spot_toggles_round_trip_and_old_files_default_on(tmp_path):
     assert again.slots[0].points[0].enabled is False
     assert again.slots[0].points[1].enabled is True
     assert json.loads(path.read_text(encoding="utf-8"))["slots"][0]["points"][0]["on"] is False
+
+
+def test_old_settings_file_without_a_stop_key_uses_f8(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_slot": 0,
+                "hotkey": "<f7>",
+                "interval": 0.25,
+                "slots": [{"points": [{"x": 3, "y": 4}]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_settings(path)
+    assert loaded.hotkey == "<f7>"
+    assert loaded.stop_hotkey == "<f8>"
+    loaded.stop_hotkey = "<shift>+<f10>"
+    loaded.hotkey = "<ctrl>+a"
+    save_settings(loaded, path)
+    again = load_settings(path)
+    assert again.hotkey == "<ctrl>+a"
+    assert again.stop_hotkey == "<shift>+<f10>"
 
 
 def test_old_settings_file_without_names_loads(tmp_path):

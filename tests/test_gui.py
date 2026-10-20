@@ -68,6 +68,10 @@ class FakeEmergency:
         self.stopped = False
         self.callback = callback
 
+    def set_hotkey(self, spec, callback):
+        self.spec = spec
+        self.start(callback)
+
     def stop(self):
         self.stopped = True
         self.callback = None
@@ -434,10 +438,16 @@ def test_rebind_play_key_is_saved(app):
     assert app.hotkeys.capturing
     app.hotkeys.emit_key("b")
     app.root.update()
+    assert app.settings.hotkey == "<f6>"
+    assert app.hotkeys.spec == "<f6>"
+    assert app.hotkey_value.cget("text") == "B"
+    assert app.hotkey_save.frame.winfo_ismapped()
+    app.hotkey_save.invoke()
     assert app.settings.hotkey == "b"
     assert app.hotkeys.spec == "b"
     assert app.load().hotkey == "b"
     assert app.hotkey_value.cget("text") == "B"
+    assert not app.hotkey_save.frame.winfo_ismapped()
 
 
 def test_speed_bar_saves_a_faster_gap(app):
@@ -470,15 +480,18 @@ def test_pointer_movement_does_not_stop_clicking(app):
 
 
 def test_window_shows_f8_stop_and_keeps_the_play_key(app):
-    assert app.emergency_label.cget("text") == "F8 stops clicking"
+    assert app.stop_value.cget("text") == "F8"
+    assert app.settings.stop_hotkey == "<f8>"
     assert app.emergency.spec == "<f8>"
     assert "ctrl" not in app.emergency.spec
+    assert "s+t" not in app.emergency.spec
     assert app.emergency.started
     assert app.settings.hotkey == "<f6>"
     assert app.hotkeys.spec == "<f6>"
     app.hotkey_button.invoke()
     app.hotkeys.emit_key("s")
     app.root.update()
+    app.hotkey_save.invoke()
     assert app.settings.hotkey == "s"
     assert app.hotkeys.spec == "s"
     assert app.emergency.spec == "<f8>"
@@ -530,6 +543,7 @@ def test_f8_does_not_start_when_the_play_key_is_s(app):
     app.hotkey_button.invoke()
     app.hotkeys.emit_key("s")
     app.root.update()
+    app.hotkey_save.invoke()
     app._last_toggle = 0
     app.hotkeys.callback()
     app.emergency.callback()
@@ -542,6 +556,9 @@ def test_play_key_can_be_a_chord_and_changed_again(app):
     app.hotkey_button.invoke()
     app.hotkeys.emit_key("<ctrl>+a")
     app.root.update()
+    assert app.hotkey_value.cget("text") == "Ctrl + A"
+    assert app.hotkey_save.frame.winfo_ismapped()
+    app.hotkey_save.invoke()
     assert app.settings.hotkey == "<ctrl>+a"
     assert app.hotkey_value.cget("text") == "Ctrl + A"
     assert app.load().hotkey == "<ctrl>+a"
@@ -549,6 +566,7 @@ def test_play_key_can_be_a_chord_and_changed_again(app):
     app.hotkey_button.invoke()
     app.hotkeys.emit_key("<shift>+<f8>")
     app.root.update()
+    app.hotkey_save.invoke()
     assert app.settings.hotkey == "<shift>+<f8>"
     assert app.hotkey_value.cget("text") == "Shift + F8"
     assert app.load().hotkey == "<shift>+<f8>"
@@ -560,7 +578,142 @@ def test_play_key_can_be_a_chord_and_changed_again(app):
     assert app.settings.hotkey == "<shift>+<f8>"
     assert app.hotkeys.spec == "<shift>+<f8>"
     assert app.load().hotkey == "<shift>+<f8>"
-    assert "f8" in app.status_label.cget("text").lower()
+    assert not app.hotkey_save.frame.winfo_ismapped()
+    assert "different" in app.status_label.cget("text").lower()
+
+
+def test_stop_key_save_updates_the_listener_and_pending_does_not(app):
+    assert app.stop_value.cget("text") == "F8"
+    assert app.settings.stop_hotkey == "<f8>"
+    assert app.emergency.spec == "<f8>"
+    assert not app.stop_save.frame.winfo_ismapped()
+
+    app.stop_button.invoke()
+    assert app.hotkeys.capturing
+    app.hotkeys.emit_key("<f9>")
+    app.root.update()
+    assert app.stop_value.cget("text") == "F9"
+    assert app.stop_button.text() == "Cancel"
+    assert app.stop_save.frame.winfo_ismapped()
+    assert app.settings.stop_hotkey == "<f8>"
+    assert app.emergency.spec == "<f8>"
+    assert app.emergency.callback == app._emergency_pressed
+    assert app.hotkeys.spec == "<f6>"
+    assert not app.path.exists() or app.load().stop_hotkey == "<f8>"
+
+    app.stop_save.invoke()
+    assert app.settings.stop_hotkey == "<f9>"
+    assert app.stop_value.cget("text") == "F9"
+    assert app.emergency.spec == "<f9>"
+    assert app.emergency.callback == app._emergency_pressed
+    assert app.load().stop_hotkey == "<f9>"
+    assert app.load().hotkey == "<f6>"
+    assert not app.stop_save.frame.winfo_ismapped()
+    assert "f9" in app.status_label.cget("text").lower()
+
+    app.stop_button.invoke()
+    app.hotkeys.emit_key("<f10>")
+    app.root.update()
+    assert app.stop_value.cget("text") == "F10"
+    assert app.settings.stop_hotkey == "<f9>"
+    assert app.emergency.spec == "<f9>"
+    app.stop_button.invoke()
+    assert app.stop_value.cget("text") == "F9"
+    assert app.settings.stop_hotkey == "<f9>"
+    assert app.emergency.spec == "<f9>"
+    assert not app.stop_save.frame.winfo_ismapped()
+    assert app.load().stop_hotkey == "<f9>"
+
+    app.stop_button.invoke()
+    app.hotkeys.emit_key("<ctrl>+<f8>")
+    app.root.update()
+    assert app.stop_value.cget("text") == "Ctrl + F8"
+    app.root.event_generate("<Escape>")
+    app.root.update()
+    assert app.stop_value.cget("text") == "F9"
+    assert app.settings.stop_hotkey == "<f9>"
+    assert app.emergency.spec == "<f9>"
+    assert not app.stop_save.frame.winfo_ismapped()
+
+
+def test_start_and_stop_cannot_be_the_same_key(app):
+    app.stop_button.invoke()
+    app.hotkeys.emit_key("<f6>")
+    app.root.update()
+    assert app.settings.stop_hotkey == "<f8>"
+    assert app.emergency.spec == "<f8>"
+    assert app.stop_value.cget("text") == "F8"
+    assert not app.stop_save.frame.winfo_ismapped()
+    assert "different" in app.status_label.cget("text").lower()
+
+    app.stop_button.invoke()
+    app.hotkeys.emit_key("<ctrl>")
+    app.root.update()
+    assert app.settings.stop_hotkey == "<f8>"
+    assert "cannot" in app.status_label.cget("text").lower()
+
+    app.hotkey_button.invoke()
+    app.hotkeys.emit_key("<ctrl>+a")
+    app.root.update()
+    app.hotkey_save.invoke()
+    app.stop_button.invoke()
+    app.hotkeys.emit_key("<ctrl>+a")
+    app.root.update()
+    assert app.settings.hotkey == "<ctrl>+a"
+    assert app.settings.stop_hotkey == "<f8>"
+    assert app.emergency.spec == "<f8>"
+    assert "different" in app.status_label.cget("text").lower()
+
+    app.hotkey_button.invoke()
+    app.hotkeys.emit_key("<f8>")
+    app.root.update()
+    assert app.settings.hotkey == "<ctrl>+a"
+    assert app.hotkeys.spec == "<ctrl>+a"
+    assert not app.hotkey_save.frame.winfo_ismapped()
+
+
+def test_saved_keys_reload_into_a_new_window(app):
+    import tkinter as tk
+
+    from autoclicker.storage import load_settings
+    from autoclicker.ui import AutoClickerApp
+
+    app.hotkey_button.invoke()
+    app.hotkeys.emit_key("<alt>+p")
+    app.root.update()
+    app.hotkey_save.invoke()
+    app.stop_button.invoke()
+    app.hotkeys.emit_key("<f12>")
+    app.root.update()
+    app.stop_save.invoke()
+
+    loaded = load_settings(app.path)
+    assert loaded.hotkey == "<alt>+p"
+    assert loaded.stop_hotkey == "<f12>"
+
+    root = tk.Tk()
+    mouse = FakeMouse()
+    hotkeys = FakeHotkeys()
+    capture = FakeCapture()
+    emergency = FakeEmergency()
+    again = AutoClickerApp(
+        root,
+        loaded,
+        mouse,
+        hotkeys,
+        capture,
+        lambda settings: None,
+        emergency,
+    )
+    try:
+        assert again.hotkey_value.cget("text") == "Alt + P"
+        assert again.stop_value.cget("text") == "F12"
+        assert again.hotkeys.spec == "<alt>+p"
+        assert again.emergency.spec == "<f12>"
+        assert again.settings.hotkey == "<alt>+p"
+        assert again.settings.stop_hotkey == "<f12>"
+    finally:
+        again.close()
 
 
 def test_sets_can_be_named_and_renamed(app):

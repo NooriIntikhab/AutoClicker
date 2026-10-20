@@ -52,10 +52,10 @@ macOS will ask for Accessibility permission the first time the app clicks or lis
 3. Choose how many clicks that set should run, from 1 to 5.
 4. Click the spot on your screen for click 1. Confirm it, or pick again. Then do the same for the next spot.
 5. After the last confirm, the set is saved.
-6. Press **Play**, or the play/pause key (F6 until you change it). Clicks run 1, 2, 3, then back to 1, until you pause or close the app.
+6. Press **Play**, or the play/pause key (F6 until you change it). Clicks run in order, then start again, until you pause or close the app. The stop key (F8 until you change it) only pauses.
 7. Drag the speed bar toward **Fast** to shorten the gap between clicks.
 8. **Edit** on a saved spot to move just that click. **Set up again** replaces the whole set. Cancel keeps what you already saved.
-9. **Change** sets a new play/pause key. Press Esc if you want to keep the old one.
+9. **Change** next to a key, then press the new key. **Save** stores it. Esc or **Cancel** keeps the previous key. Play and stop cannot be the same key.
 10. Minimize keeps the clicks going. Close stops them.
 
 Switching to another set that already has spots uses that set on the next pass. The five sets, the key, and the speed are still there after you quit.

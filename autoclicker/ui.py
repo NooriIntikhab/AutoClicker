@@ -20,7 +20,6 @@ from autoclicker.model import (
     format_hotkey,
     format_speed,
     gap_from_slider,
-    is_stop_key,
     order_text,
     parse_click_count,
     slider_from_gap,
@@ -240,6 +239,10 @@ class AutoClickerApp:
         self.font = choose_font(root)
         self._busy = False
         self._rebinding = False
+        self._rebind_target: str | None = None
+        self._rebind_token = 0
+        self._pending_start: str | None = None
+        self._pending_stop: str | None = None
         self._renaming = False
         self._closing = False
         self._banner_active = False
@@ -332,50 +335,20 @@ class AutoClickerApp:
         )
         self.play_button.pack(fill="x", pady=(8, 10))
 
-        key_row = tk.Frame(self._body, bg=BG)
-        key_row.pack(fill="x")
-        tk.Label(
-            key_row,
-            text="Play / pause key",
-            bg=BG,
-            fg=MUTED,
-            font=(self.font, 10),
-        ).pack(side="left")
-        self.hotkey_value = tk.Label(
-            key_row,
-            text=format_hotkey(self.settings.hotkey),
-            bg=SURFACE,
-            fg=TEXT,
-            font=(self.font, 10, "bold"),
-            padx=10,
-            pady=4,
-        )
-        self.hotkey_value.pack(side="left", padx=8)
-        self.hotkey_button = FlatButton(
-            key_row,
-            "Change",
+        self.hotkey_value, self.hotkey_button, self.hotkey_save = self._hotkey_row(
+            "Play / pause key",
             self.on_hotkey_button,
-            (self.font, 10, "bold"),
-            SURFACE_2,
-            TEXT,
-            "#3a3d46",
-            pady=4,
+            self.save_start_key,
         )
-        self.hotkey_button.pack(side="right")
-
-        self.emergency_label = tk.Label(
-            self._body,
-            text="F8 stops clicking",
-            bg=BG,
-            fg=MUTED,
-            font=(self.font, 9),
-            anchor="w",
+        self.stop_value, self.stop_button, self.stop_save = self._hotkey_row(
+            "Stop key",
+            self.on_stop_button,
+            self.save_stop_key,
         )
-        self.emergency_label.pack(fill="x", pady=(6, 0))
 
         self.hint_label = tk.Label(
             self._body,
-            text="This key keeps working while the window is minimized.",
+            text="These keys keep working while the window is minimized.",
             bg=BG,
             fg=MUTED,
             font=(self.font, 9),
@@ -627,6 +600,49 @@ class AutoClickerApp:
         button.label.configure(padx=14)
         return button
 
+    def _hotkey_row(self, caption: str, on_change, on_save):
+        row = tk.Frame(self._body, bg=BG)
+        row.pack(fill="x", pady=(0, 6))
+        tk.Label(
+            row,
+            text=caption,
+            bg=BG,
+            fg=MUTED,
+            font=(self.font, 10),
+        ).pack(side="left")
+        value = tk.Label(
+            row,
+            text="",
+            bg=SURFACE,
+            fg=TEXT,
+            font=(self.font, 10, "bold"),
+            padx=10,
+            pady=4,
+        )
+        value.pack(side="left", padx=8)
+        change = FlatButton(
+            row,
+            "Change",
+            on_change,
+            (self.font, 10, "bold"),
+            SURFACE_2,
+            TEXT,
+            "#3a3d46",
+            pady=4,
+        )
+        change.pack(side="right")
+        save = FlatButton(
+            row,
+            "Save",
+            on_save,
+            (self.font, 10, "bold"),
+            ACCENT,
+            TEXT,
+            ACCENT_HOVER,
+            pady=4,
+        )
+        return value, change, save
+
     def _section(self, parent, text: str) -> tk.Label:
         return tk.Label(
             parent,
@@ -709,11 +725,23 @@ class AutoClickerApp:
             enabled=not locked,
         )
         self._sync_add_button(points, locked)
-        self.hotkey_value.configure(text=format_hotkey(self.settings.hotkey))
-        self.hotkey_button.set_style(
-            text="Cancel" if self._rebinding else "Change",
-            enabled=not self._busy,
+        self._sync_hotkey_row(
+            self.hotkey_value,
+            self.hotkey_button,
+            self.hotkey_save,
+            self.settings.hotkey,
+            self._pending_start,
+            self._rebind_target == "start",
         )
+        self._sync_hotkey_row(
+            self.stop_value,
+            self.stop_button,
+            self.stop_save,
+            self.settings.stop_hotkey,
+            self._pending_stop,
+            self._rebind_target == "stop",
+        )
+        self._sync_hotkey_escape()
         self.speed_var.set(slider_from_gap(self.settings.interval))
         self.speed_value.configure(text=format_speed(self.settings.interval))
         self._sync_play_button()
@@ -915,7 +943,9 @@ class AutoClickerApp:
         self._sync_play_button()
 
     def toggle_play(self) -> None:
-        if self._interactions_locked() or self._closing:
+        # The saved play key stays active while a new key is only pending.
+        # Setup still blocks it; choosing a key does not.
+        if self._busy or self._closing:
             return
         now = time.monotonic()
         if now - self._last_toggle < 0.25:
@@ -960,56 +990,188 @@ class AutoClickerApp:
             self.root.after_cancel(self._save_after)
         self._save_after = self.root.after(200, self.persist)
 
+    def _sync_hotkey_row(self, value, button, save, saved: str, pending: str | None, capturing: bool) -> None:
+        value.configure(text=format_hotkey(pending or saved))
+        button.set_style(
+            text="Cancel" if capturing or pending else "Change",
+            enabled=not self._busy,
+        )
+        if pending:
+            if not save.frame.winfo_ismapped():
+                save.pack(side="right", padx=(0, 6))
+        elif save.frame.winfo_ismapped():
+            save.frame.pack_forget()
+
+    def _sync_hotkey_escape(self) -> None:
+        listening = bool(
+            self._rebinding or self._pending_start is not None or self._pending_stop is not None
+        )
+        if listening:
+            self.root.bind("<Escape>", self._on_hotkey_escape)
+            return
+        if self._count_waiting:
+            return
+        try:
+            self.root.unbind("<Escape>")
+        except tk.TclError:
+            pass
+
+    def _on_hotkey_escape(self, _event=None):
+        if self._count_waiting or self._busy:
+            return "break"
+        if self._rebind_target == "start" or self._pending_start is not None:
+            self.cancel_start_key()
+        elif self._rebind_target == "stop" or self._pending_stop is not None:
+            self.cancel_stop_key()
+        return "break"
+
     def on_hotkey_button(self) -> None:
         if self._busy:
             return
-        if self._rebinding:
-            self.cancel_rebind()
+        if self._rebind_target == "start" or self._pending_start is not None:
+            self.cancel_start_key()
         else:
-            self.start_rebind()
+            self.start_rebind("start")
 
-    def start_rebind(self) -> None:
-        if self._interactions_locked():
+    def on_stop_button(self) -> None:
+        if self._busy:
+            return
+        if self._rebind_target == "stop" or self._pending_stop is not None:
+            self.cancel_stop_key()
+        else:
+            self.start_rebind("stop")
+
+    def start_rebind(self, target: str) -> None:
+        if self._busy or self._closing:
             return
         if self._renaming:
             self.cancel_rename()
+        if self._rebind_target and self._rebind_target != target:
+            try:
+                self.hotkeys.cancel_capture()
+            except Exception:
+                pass
+            self._rebind_token += 1
+            self._rebinding = False
+            self._rebind_target = None
+        if target == "start":
+            self._pending_stop = None
+        else:
+            self._pending_start = None
+        self._rebind_token += 1
+        token = self._rebind_token
+        self._rebind_target = target
         self._rebinding = True
-        try:
-            self.hotkeys.clear_hotkey()
-        except Exception as exc:
-            print(f"AutoClicker could not pause the hotkey: {exc}", file=sys.stderr)
         self.refresh()
         self._set_status("Press a key, or Ctrl, Alt, or Shift plus a key. Esc cancels.")
         try:
             self.hotkeys.capture_next_key(
-                lambda spec: self.root.after(0, lambda: self._finish_rebind(spec))
+                lambda spec, token=token: self.root.after(0, lambda: self._finish_rebind(spec, token))
             )
         except Exception as exc:
             print(f"AutoClicker could not listen for a key: {exc}", file=sys.stderr)
-            self._finish_rebind(None)
+            self._finish_rebind(None, token)
             self._set_status("Could not listen for a new key.")
 
-    def cancel_rebind(self) -> None:
+    def cancel_start_key(self) -> None:
+        if self._rebind_target == "start":
+            self._cancel_capture()
+            return
+        self._pending_start = None
+        self.refresh()
+
+    def cancel_stop_key(self) -> None:
+        if self._rebind_target == "stop":
+            self._cancel_capture()
+            return
+        self._pending_stop = None
+        self.refresh()
+
+    def _cancel_capture(self) -> None:
+        token = self._rebind_token
         try:
             self.hotkeys.cancel_capture()
         except Exception:
             pass
-        self._finish_rebind(None)
+        self._finish_rebind(None, token)
+        self._rebind_token += 1
 
-    def _finish_rebind(self, spec: str | None) -> None:
-        if not self._rebinding or self._closing:
+    def save_start_key(self) -> None:
+        chosen = self._pending_start
+        if chosen is None or self._closing:
             return
-        self._rebinding = False
-        chosen = canonical_hotkey(spec) if spec else None
-        if chosen is not None:
-            self.settings.hotkey = chosen
-            self.persist()
+        if not self._pending_is_usable(chosen, self.settings.stop_hotkey):
+            self._pending_start = None
+            self.refresh()
+            self._set_status(self._rejected_hotkey_status(chosen, self.settings.stop_hotkey))
+            return
+        self._pending_start = None
+        self.settings.hotkey = chosen
+        self.persist()
         self.apply_hotkey()
         self.refresh()
-        if spec and is_stop_key(spec):
-            self._set_status("F8 always stops. Pick another key.")
-        elif chosen is not None:
-            self._set_status(f"Play / pause is now {format_hotkey(chosen)}.")
+        self._set_status(f"Play / pause is now {format_hotkey(chosen)}.")
+
+    def save_stop_key(self) -> None:
+        chosen = self._pending_stop
+        if chosen is None or self._closing:
+            return
+        if not self._pending_is_usable(chosen, self.settings.hotkey):
+            self._pending_stop = None
+            self.refresh()
+            self._set_status(self._rejected_hotkey_status(chosen, self.settings.hotkey))
+            return
+        self._pending_stop = None
+        self.settings.stop_hotkey = chosen
+        self.persist()
+        self._arm_emergency_stop()
+        self.refresh()
+        self._set_status(f"Stop is now {format_hotkey(chosen)}.")
+
+    def _pending_is_usable(self, chosen: str, other: str) -> bool:
+        canonical = canonical_hotkey(chosen)
+        return canonical is not None and canonical != other
+
+    def _rejected_hotkey_status(self, chosen: str, other: str) -> str:
+        if canonical_hotkey(chosen) is None:
+            return "That key cannot be used."
+        if chosen == other:
+            return "Play and stop need different keys."
+        return "That key cannot be used."
+
+    def _finish_rebind(self, spec: str | None, token: int | None = None) -> None:
+        target = self._rebind_target
+        if token is not None and token != self._rebind_token:
+            return
+        if target is None or self._closing or not self._rebinding:
+            return
+        self._rebinding = False
+        self._rebind_target = None
+        if spec is None:
+            if target == "start":
+                self._pending_start = None
+            else:
+                self._pending_stop = None
+            self.refresh()
+            return
+        chosen = canonical_hotkey(spec)
+        other = self.settings.stop_hotkey if target == "start" else self.settings.hotkey
+        if chosen is None or chosen == other:
+            if target == "start":
+                self._pending_start = None
+            else:
+                self._pending_stop = None
+            self.refresh()
+            self._set_status(
+                "That key cannot be used." if chosen is None else "Play and stop need different keys."
+            )
+            return
+        if target == "start":
+            self._pending_start = chosen
+        else:
+            self._pending_stop = chosen
+        self.refresh()
+        self._set_status(f"Press Save to keep {format_hotkey(chosen)}.")
 
     def apply_hotkey(self) -> None:
         if self._closing:
@@ -1018,11 +1180,12 @@ class AutoClickerApp:
             self.hotkeys.set_hotkey(self.settings.hotkey, self._hotkey_pressed)
         except Exception as exc:
             print(f"AutoClicker hotkey failed: {exc}", file=sys.stderr)
-            if self.settings.hotkey != "<f6>":
-                self.settings.hotkey = "<f6>"
+            fallback = "<f6>" if self.settings.stop_hotkey != "<f6>" else "<f7>"
+            if self.settings.hotkey != fallback:
+                self.settings.hotkey = fallback
                 self.persist()
                 try:
-                    self.hotkeys.set_hotkey("<f6>", self._hotkey_pressed)
+                    self.hotkeys.set_hotkey(fallback, self._hotkey_pressed)
                 except Exception:
                     self._set_status("Could not listen for the play / pause key.")
 
@@ -1038,14 +1201,32 @@ class AutoClickerApp:
         if self.emergency is None or self._closing:
             return
         try:
-            self.emergency.start(self._emergency_pressed)
+            self._listen_for_stop(self.settings.stop_hotkey)
         except Exception as exc:
-            print(f"AutoClicker could not listen for F8: {exc}", file=sys.stderr)
+            print(f"AutoClicker could not listen for the stop key: {exc}", file=sys.stderr)
+            fallback = "<f8>" if self.settings.hotkey != "<f8>" else "<f9>"
+            if self.settings.stop_hotkey == fallback:
+                self._set_status("Could not listen for the stop key.")
+                return
+            self.settings.stop_hotkey = fallback
+            self.persist()
+            try:
+                self._listen_for_stop(fallback)
+            except Exception:
+                self._set_status("Could not listen for the stop key.")
+
+    def _listen_for_stop(self, spec: str) -> None:
+        self.emergency.spec = spec
+        setter = getattr(self.emergency, "set_hotkey", None)
+        if setter is not None:
+            setter(spec, self._emergency_pressed)
+            return
+        self.emergency.start(self._emergency_pressed)
 
     def _emergency_pressed(self) -> None:
         if self._closing:
             return
-        # Hold off Play so F8 cannot start a run from the same key moment.
+        # Hold off Play so the stop key cannot start a run from the same key moment.
         self._block_start_until = time.monotonic() + 0.35
         try:
             self.root.after(0, self.emergency_stop)
@@ -1053,7 +1234,7 @@ class AutoClickerApp:
             apply_emergency_stop(self.engine)
 
     def emergency_stop(self) -> None:
-        """F8 always pauses. It does not start clicking."""
+        """The stop key pauses. It does not start clicking."""
 
         if self._closing:
             return
@@ -1063,6 +1244,7 @@ class AutoClickerApp:
     def run_setup(self) -> None:
         if self._busy or self._closing:
             return
+        self._drop_hotkey_edit()
         if self._renaming:
             self.cancel_rename()
         slot_index = self.settings.active_slot
@@ -1101,6 +1283,7 @@ class AutoClickerApp:
     def edit_point(self, index: int) -> None:
         if self._busy or self._closing:
             return
+        self._drop_hotkey_edit()
         if self._renaming:
             self.cancel_rename()
         slot = self.settings.slots[self.settings.active_slot]
@@ -1161,6 +1344,7 @@ class AutoClickerApp:
     def add_point(self) -> None:
         if self._busy or self._closing:
             return
+        self._drop_hotkey_edit()
         if self._renaming:
             self.cancel_rename()
         slot = self.settings.slots[self.settings.active_slot]
@@ -1198,9 +1382,19 @@ class AutoClickerApp:
                 if saved_message:
                     self._set_status(saved_message)
 
+    def _drop_hotkey_edit(self) -> None:
+        capturing = self._rebind_target is not None
+        if capturing:
+            self._cancel_capture()
+        self._pending_start = None
+        self._pending_stop = None
+        if not capturing and not self._closing:
+            self.refresh()
+
     def start_rename(self) -> None:
         if self._interactions_locked() or self._closing or self._renaming:
             return
+        self._drop_hotkey_edit()
         self._renaming = True
         slot = self.settings.slots[self.settings.active_slot]
         self.name_entry.delete(0, "end")

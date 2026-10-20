@@ -12,8 +12,9 @@ MIN_INTERVAL = 0.05
 MAX_INTERVAL = 2.0
 DEFAULT_INTERVAL = 0.25
 DEFAULT_HOTKEY = "<f6>"
-# F8 always stops clicking and cannot be the play/pause key.
-EMERGENCY_STOP_SPEC = "<f8>"
+DEFAULT_STOP_HOTKEY = "<f8>"
+# Default stop key only. A saved stop key replaces it; Ctrl+S+T is not a stop.
+EMERGENCY_STOP_SPEC = DEFAULT_STOP_HOTKEY
 
 _MODIFIER_NAMES = frozenset(
     {
@@ -167,7 +168,10 @@ def is_valid_hotkey(spec: object) -> bool:
 
 
 def canonical_hotkey(spec: object) -> str | None:
-    """Return the stored play/pause spec, or None when it cannot be used."""
+    """Return a stored key spec, or None when it cannot be used.
+
+    A bare modifier is rejected. One key, or Ctrl, Alt, or Shift plus one key, is kept.
+    """
 
     parsed = _parts_of_hotkey(spec)
     if parsed is None:
@@ -177,17 +181,25 @@ def canonical_hotkey(spec: object) -> str | None:
         return None
     key = keys[0]
     if not modifiers:
-        if key == EMERGENCY_STOP_SPEC:
-            return None
         return key
     ordered = [name for name in _MODIFIER_ORDER if name in modifiers]
     return "+".join(f"<{name}>" for name in ordered) + "+" + key
 
 
-def is_stop_key(spec: object) -> bool:
-    """True only for the fixed F8 stop key."""
+def resolve_hotkeys(hotkey: object, stop_hotkey: object) -> tuple[str, str]:
+    """Return a play key and a stop key that are not the same."""
 
-    return _parts_of_hotkey(spec) == ([], [EMERGENCY_STOP_SPEC])
+    start = canonical_hotkey(hotkey) or DEFAULT_HOTKEY
+    stop = canonical_hotkey(stop_hotkey) or DEFAULT_STOP_HOTKEY
+    if start != stop:
+        return start, stop
+    if stop != DEFAULT_STOP_HOTKEY:
+        stop = DEFAULT_STOP_HOTKEY
+    if start == stop:
+        start = DEFAULT_HOTKEY
+    if start == stop:
+        stop = "<f9>"
+    return start, stop
 
 
 def parse_click_count(value: object) -> int | None:
@@ -234,13 +246,14 @@ def contains_point(
 class Settings:
     active_slot: int = 0
     hotkey: str = DEFAULT_HOTKEY
+    stop_hotkey: str = DEFAULT_STOP_HOTKEY
     interval: float = DEFAULT_INTERVAL
     slots: list[ClickSet] = field(default_factory=default_slots)
 
     def __post_init__(self) -> None:
         self.active_slot = _clamp_slot(self.active_slot)
         self.interval = clamp_interval(self.interval)
-        self.hotkey = canonical_hotkey(self.hotkey) or DEFAULT_HOTKEY
+        self.hotkey, self.stop_hotkey = resolve_hotkeys(self.hotkey, self.stop_hotkey)
         self.slots = _fit_slots(self.slots)
 
     def active_points(self) -> list[ClickPoint]:
@@ -253,7 +266,8 @@ class Settings:
         return {
             "version": 1,
             "active_slot": self.active_slot,
-            "hotkey": canonical_hotkey(self.hotkey) or DEFAULT_HOTKEY,
+            "hotkey": self.hotkey,
+            "stop_hotkey": self.stop_hotkey,
             "interval": self.interval,
             "slots": [
                 {
@@ -278,9 +292,15 @@ def settings_from_dict(data: object) -> Settings:
         for index, slot in enumerate(slots[:SLOT_COUNT]):
             parsed_slots[index] = _parse_slot(slot)
     hotkey = data.get("hotkey", DEFAULT_HOTKEY)
+    if "stop_hotkey" in data:
+        raw_stop = data.get("stop_hotkey")
+        stop_hotkey = raw_stop if isinstance(raw_stop, str) else DEFAULT_STOP_HOTKEY
+    else:
+        stop_hotkey = DEFAULT_STOP_HOTKEY
     return Settings(
         active_slot=_clamp_slot(data.get("active_slot", 0)),
         hotkey=hotkey if isinstance(hotkey, str) else DEFAULT_HOTKEY,
+        stop_hotkey=stop_hotkey,
         interval=clamp_interval(data.get("interval", DEFAULT_INTERVAL)),
         slots=parsed_slots,
     )
